@@ -52,11 +52,14 @@ fun Application.module() {
         ?: environment.config.propertyOrNull("ktor.gemini.apiKey")?.getString()
         ?: throw IllegalStateException("GEMINI_API_KEY nije postavljen (ENV) niti u application.yaml pod 'ktor.gemini.apiKey'.")
 
-
+    val tmdbKey = System.getenv("TMDB_API_KEY")
+        ?: environment.config.propertyOrNull("ktor.tmdb.apiKey")?.getString()
+        ?: throw IllegalStateException("TMDB_API_KEY nije postavljen (ENV) niti u application.yaml pod 'ktor.tmdb.apiKey'.")
 
     val geminiService = GeminiService(apiKey = apiKey)
+    val tmdbService = TmdbService(apiKey = tmdbKey)
 
-    configureRouting(geminiService)
+    configureRouting(geminiService, tmdbService)
 }
 
 @kotlinx.serialization.Serializable

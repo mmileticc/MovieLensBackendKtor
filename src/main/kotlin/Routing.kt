@@ -8,10 +8,42 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import io.ktor.http.content.*
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 
 @Serializable
 data class ChatRequest(val message: String)
-fun Application.configureRouting(geminiService: GeminiService) {
+
+@Serializable
+data class TmdbMatch(
+    val id: Int,
+    val title: String,
+    val originalTitle: String? = null,
+    val releaseDate: String? = null,
+    val overview: String? = null,
+    val posterPath: String? = null,
+    val popularity: Double? = null,
+    val voteAverage: Double? = null
+)
+
+@Serializable
+data class CandidateResolution(
+    val candidate: MovieCandidate,
+    val matches: List<TmdbMatch>
+)
+
+@Serializable
+data class VisionSearchResponse(
+    val notMovieLike: Boolean,
+    val uncertaintyReason: String? = null,
+    val queryLanguage: String? = null,
+    val resolutions: List<CandidateResolution>
+)
+
+fun Application.configureRouting(geminiService: GeminiService, tmdbService: TmdbService) {
     routing {
         get("/") { call.respondText("OK") }
 
@@ -84,17 +116,88 @@ fun Application.configureRouting(geminiService: GeminiService) {
                 part.dispose()
             }
 
-            if (message.isNullOrBlank()) {
-                return@post call.respond(HttpStatusCode.BadRequest, "Missing form field: message")
-            }
             if (imageBytes == null) {
-                return@post call.respond(HttpStatusCode.BadRequest, "Missing file part: image")
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Missing file part: image"))
             }
 
-            println("\n[LOG] ${java.time.LocalTime.now()} | VISION: message='${message}' size=${imageBytes!!.size} mime=$imageMime")
+            val size = imageBytes!!.size
+            val allowedMimes = setOf("image/jpeg", "image/jpg", "image/png")
+            if (size > 8 * 1024 * 1024) {
+                return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("Image too large (>8MB)"))
+            }
+            if (imageMime.lowercase() !in allowedMimes) {
+                return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Unsupported image mime: $imageMime"))
+            }
 
-            val result = geminiService.chatWithImage(message!!, imageBytes!!, imageMime)
-            call.respondText(result, contentType = ContentType.Text.Plain.withCharset(Charsets.UTF_8))
+            val t0 = System.currentTimeMillis()
+            println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime} (message ignored)")
+
+            try {
+                // 1) Detekcija kandidata sa timeoutom
+                val (detected, tGeminiMs) = try {
+                    val start = System.currentTimeMillis()
+                    val detected = withTimeout(25_000) {
+                        geminiService.detectMoviesFromImage(imageBytes!!, imageMime)
+                    }
+                    detected to (System.currentTimeMillis() - start)
+                } catch (e: TimeoutCancellationException) {
+                    return@post call.respond(HttpStatusCode.GatewayTimeout, ErrorResponse("Gemini detection timed out"))
+                }
+
+                val candidatesTop3 = detected.candidates.take(3)
+                println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size} | top=${candidatesTop3.joinToString { it.title + (it.year?.let { y -> " ($y)" } ?: "") }}")
+
+                // 2) TMDB pretrage u paraleli (do 3)
+                val t3 = System.currentTimeMillis()
+                val resolutions = coroutineScope {
+                    candidatesTop3.map { cand ->
+                        async {
+                            val year = cand.year
+                            val matches = try {
+                                tmdbService.searchMovies(cand.title, year)
+                                    .take(5)
+                                    .map {
+                                        TmdbMatch(
+                                            id = it.id,
+                                            title = it.title,
+                                            originalTitle = it.originalTitle,
+                                            releaseDate = it.releaseDate,
+                                            overview = it.overview,
+                                            posterPath = it.posterPath,
+                                            popularity = it.popularity,
+                                            voteAverage = it.voteAverage
+                                        )
+                                    }
+                            } catch (ex: Exception) {
+                                // Logiraj i vrati prazan set za ovog kandidata (globalni status će i dalje biti 200)
+                                println("[ERROR] TMDB search failed for '${cand.title}' (${year ?: "?"}): ${ex.message}")
+                                emptyList()
+                            }
+                            CandidateResolution(candidate = cand, matches = matches)
+                        }
+                    }.awaitAll()
+                }
+                val tTmdbMs = System.currentTimeMillis() - t3
+                println("[LOG] TMDB done in ${tTmdbMs}ms | per-candidate matches: ${resolutions.joinToString { it.matches.size.toString() }}")
+
+                val payload = VisionSearchResponse(
+                    notMovieLike = detected.notMovieLike,
+                    uncertaintyReason = detected.uncertaintyReason,
+                    queryLanguage = detected.queryLanguage,
+                    resolutions = resolutions
+                )
+
+                val total = System.currentTimeMillis() - t0
+                println("[LOG] /chat/vision total=${total}ms")
+                call.respond(payload)
+            } catch (e: IllegalStateException) {
+                // Pretpostavimo da je upstream problem (Gemini parsing/SDK ili TMDB HTTP)
+                println("[ERROR] Upstream failure: ${e.message}\n" + (e.stackTraceToString().lineSequence().take(10).joinToString("\n")))
+                call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Upstream error"))
+            } catch (e: Throwable) {
+                println("[ERROR] Unexpected: ${e.message}\n" + (e.stackTraceToString().lineSequence().take(10).joinToString("\n")))
+                call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
+            }
         }
     }
 }

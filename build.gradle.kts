@@ -36,6 +36,7 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:$jacksonVersion")
     implementation("com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion")
 
+    implementation("com.squareup.okio:okio:3.9.0")
 
     // Google AI SDK
     implementation("com.google.genai:google-genai:0.1.0")
