@@ -1,4 +1,4 @@
-package com.example
+package com.milinko.services
 
 import com.google.genai.Client
 import com.google.genai.types.Blob

@@ -1,11 +1,14 @@
-package com.example
+package com.milinko
 
+import com.milinko.scraping.model.ScrapedMovie
+import com.milinko.services.GeminiService
+import com.milinko.services.MovieCandidate
+import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import io.ktor.http.content.*
 import kotlinx.coroutines.TimeoutCancellationException
@@ -26,7 +29,9 @@ data class TmdbMatch(
     val overview: String? = null,
     val posterPath: String? = null,
     val popularity: Double? = null,
-    val voteAverage: Double? = null
+    val voteAverage: Double? = null,
+    // MODIFIKACIJA: Dodata lista bioskopa koja se vraća frontu
+    val cinemaShowtimes: List<ScrapedMovie> = emptyList()
 )
 
 @Serializable
@@ -43,7 +48,10 @@ data class VisionSearchResponse(
     val resolutions: List<CandidateResolution>
 )
 
-fun Application.configureRouting(geminiService: GeminiService, tmdbService: TmdbService) {
+fun Application.configureRouting(
+    geminiService: GeminiService,
+    tmdbService: TmdbService,
+    privremenaBazaFilmova: List<ScrapedMovie>) {
     routing {
         get("/") { call.respondText("OK") }
 
@@ -89,7 +97,7 @@ fun Application.configureRouting(geminiService: GeminiService, tmdbService: Tmdb
         // Multipart endpoint for text + image (vision)
         post("/chat/vision") {
             val multipart = call.receiveMultipart()
-
+            println("\n[LOG] ${java.time.LocalTime.now()} | IMAGE ONLY")
             var message: String? = null
             var imageBytes: ByteArray? = null
             var imageMime: String = "image/jpeg"
@@ -157,6 +165,12 @@ fun Application.configureRouting(geminiService: GeminiService, tmdbService: Tmdb
                                 tmdbService.searchMovies(cand.title, year)
                                     .take(5)
                                     .map {
+                                        // MODIFIKACIJA: Pokretanje tvoje pomoćne metode nad privremenom bazom
+                                        val pronadjeniBioskopi = proveriDostupnostUBioskopima(
+                                            tmdbOriginalTitle = it.originalTitle,
+                                            tmdbTitle = it.title,
+                                            privremenaBazaFilmova = privremenaBazaFilmova
+                                        )
                                         TmdbMatch(
                                             id = it.id,
                                             title = it.title,
@@ -165,7 +179,8 @@ fun Application.configureRouting(geminiService: GeminiService, tmdbService: Tmdb
                                             overview = it.overview,
                                             posterPath = it.posterPath,
                                             popularity = it.popularity,
-                                            voteAverage = it.voteAverage
+                                            voteAverage = it.voteAverage,
+                                            cinemaShowtimes = pronadjeniBioskopi
                                         )
                                     }
                             } catch (ex: Exception) {
@@ -199,5 +214,32 @@ fun Application.configureRouting(geminiService: GeminiService, tmdbService: Tmdb
                 call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
             }
         }
+    }
+}
+/**
+ * Pomoćna metoda koja pretražuje lokalnu privremenu bazu skrapovanih filmova.
+ * Koristi originalni naslov sa TMDB-a kao primarni izvor istine, a domaći naslov kao fallback.
+ */
+private fun proveriDostupnostUBioskopima(
+    tmdbOriginalTitle: String?,
+    tmdbTitle: String,
+    privremenaBazaFilmova: List<ScrapedMovie>
+): List<ScrapedMovie> {
+    if (privremenaBazaFilmova.isEmpty()) return emptyList()
+
+    val cistiOriginalni = tmdbOriginalTitle?.lowercase()?.trim() ?: ""
+    val cistiDomaci = tmdbTitle.lowercase().trim()
+
+    return privremenaBazaFilmova.filter { film ->
+        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
+        val bioskopDomaci = film.title.lowercase().trim()
+
+        // 1. Prvo i najjače poklapanje: poredimo originalne naslove (izbegavamo probleme sa prevodom)
+        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiOriginalni)) ||
+                (cistiOriginalni.isNotEmpty() && bioskopDomaci.contains(cistiOriginalni)) ||
+
+                // 2. Fallback: poredimo domaće naslove ako se poklope na sajtovima
+                bioskopDomaci.contains(cistiDomaci) ||
+                (bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiDomaci))
     }
 }

@@ -7,7 +7,7 @@ plugins {
     id("io.ktor.plugin") version "3.4.2"
 }
 
-group = "com.example"
+group = "com.milinko"
 version = "0.0.1"
 
 application {
@@ -53,4 +53,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation("io.ktor:ktor-server-test-host-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
+
+
+    //scraping biblioteke
+    implementation("com.microsoft.playwright:playwright:1.42.0")
+    implementation("org.jsoup:jsoup:1.17.2")
+    implementation("com.microsoft.playwright:playwright:1.42.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
 }

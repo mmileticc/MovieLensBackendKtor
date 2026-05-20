@@ -1,4 +1,4 @@
-rootProject.name = "GeminiWrapperBackendKtor"
+rootProject.name = "MovieLensBackendKtor"
 
 dependencyResolutionManagement {
     repositories {

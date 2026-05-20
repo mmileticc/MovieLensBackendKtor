@@ -1,4 +1,4 @@
-package com.example
+package com.milinko.services
 
 import io.ktor.client.*
 import io.ktor.client.call.*
@@ -9,6 +9,9 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.http.HttpHeaders.ContentEncoding
+import io.netty.handler.codec.compression.StandardCompressionOptions.deflate
+import io.netty.handler.codec.compression.StandardCompressionOptions.gzip
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -20,6 +23,10 @@ class TmdbService(private val apiKey: String) {
     private val useV4Bearer: Boolean = apiKey.trim().startsWith("eyJ")
 
     private val client = HttpClient(CIO) {
+        install(ContentEncoding) {
+            gzip()
+            deflate()
+        }
         install(HttpTimeout) {
             connectTimeoutMillis = 5_000
             requestTimeoutMillis = 12_000
@@ -27,7 +34,9 @@ class TmdbService(private val apiKey: String) {
         }
         install(ContentNegotiation) {
             json(
-                Json { ignoreUnknownKeys = true; isLenient = true }
+                Json {
+                    ignoreUnknownKeys = true;
+                    isLenient = true }
             )
         }
     }
