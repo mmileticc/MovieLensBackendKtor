@@ -60,4 +60,12 @@ dependencies {
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("com.microsoft.playwright:playwright:1.42.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
+
+    implementation("org.jetbrains.exposed:exposed-core:0.41.1")
+    implementation("org.jetbrains.exposed:exposed-dao:0.41.1")
+    implementation("org.jetbrains.exposed:exposed-jdbc:0.41.1")
+    implementation("org.jetbrains.exposed:exposed-kotlin-datetime:0.41.1")
+
+    // PostgreSQL drajver
+    implementation("org.postgresql:postgresql:42.7.2")
 }

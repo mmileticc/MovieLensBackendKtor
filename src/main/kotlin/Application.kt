@@ -1,25 +1,24 @@
 package com.milinko
 
-import com.milinko.scraping.model.ScrapedMovie
+import com.milinko.db.DatabaseFactory
+import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import com.milinko.services.GeminiService
 import com.milinko.services.TmdbService
-import io.ktor.server.application.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.plugins.statuspages.*
 import io.ktor.http.*
-import io.ktor.server.netty.EngineMain
-import io.ktor.server.response.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.*
+import io.ktor.server.netty.*
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
-import kotlinx.coroutines.Dispatchers
+import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.response.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Inicijalizacija Ktor aplikacije: ContentNegotiation (kotlinx-json),
@@ -59,29 +58,11 @@ fun Application.module() {
         allowHeader(HttpHeaders.Authorization)
     }
 
+    DatabaseFactory.init()
 
-    val privremenaBazaFilmova = CopyOnWriteArrayList<ScrapedMovie>()
+    configureScrapingLifecycle()
 
-    // Pokrećemo skrapovanje asinhrono u pozadini odmah po startovanju Ktor-a
-    // da ne bismo blokirali podizanje samog servera
-    launch(Dispatchers.Default) {
-        println("\n=== [KTOR POZADINA] INICIJALIZACIJA SKRAPERA ===")
-        val aktivniScraperi = listOf(
-            MtsDvoranaScraper(),
-            CineplexxScraper(),
-            ArenaCineplexScraper()
-        )
-        val engine = ScrapingEngineConcurrent(aktivniScraperi)
-
-        try {
-            val skrapovaniFilmovi = engine.runAllScrapers(LocalDate.now())
-            privremenaBazaFilmova.addAll(skrapovaniFilmovi)
-            println("=== [KTOR POZADINA] Skrapovanje uspešno završeno! Učitano ${privremenaBazaFilmova.size} zapisa u memoriju. ===\n")
-        } catch (e: Exception) {
-            println("=== [KTOR POZADINA] Greška tokom inicijalnog skrapovanja: ${e.message} ===")
-        }
-    }
-
+    val repository = ScrapedMoviesRepository()
 
 
     // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
@@ -96,8 +77,60 @@ fun Application.module() {
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
 
-    configureRouting(geminiService, tmdbService, privremenaBazaFilmova)
+    configureRouting(geminiService, tmdbService, repository)
 }
 
 @kotlinx.serialization.Serializable
 data class ErrorResponse(val error: String)
+
+
+fun Application.configureScrapingLifecycle() {
+    val repository = ScrapedMoviesRepository()
+
+    launch {
+        try {
+            println("[REPREZENTACIJA] Provera stanja i svežine baze podataka...")
+
+            val danasnjiDatum = LocalDate.now()
+            val datumPoslednjegSkrapovanja = repository.getLatestScrapeDate()
+
+            // GLAVNA PROMENA: Pokrećemo ako je baza prazna ILI ako podaci nisu od danas
+            val trebaSkrapovati = datumPoslednjegSkrapovanja == null || datumPoslednjegSkrapovanja != danasnjiDatum
+
+            if (trebaSkrapovati) {
+                if (datumPoslednjegSkrapovanja == null) {
+                    println("[LOG] Baza je potpuno prazna. Pokrećem skraper...")
+                } else {
+                    println("[LOG] Podaci u bazi su zastareli (Zadnji upis: $datumPoslednjegSkrapovanja, Danas je: $danasnjiDatum). Pokrećem osvežavanje...")
+                }
+
+                val aktivniScraperi = listOf(
+                    MtsDvoranaScraper(),
+                    CineplexxScraper(),
+                    ArenaCineplexScraper()
+                )
+                val engine = ScrapingEngineConcurrent(aktivniScraperi)
+                val skrapovaniFilmovi = engine.runAllScrapers(danasnjiDatum)
+
+                if (skrapovaniFilmovi.isNotEmpty()) {
+                    // OPCIONO: Ako želiš da obrišeš stare filmove pre nego što upišeš nove, ovde možeš dodati brisanje,
+                    // ali pošto praviš fiksni sat kasnije, za prvu ruku samo upisujemo.
+                    repository.insertScrapedMovies(skrapovaniFilmovi)
+                    println("[LOG] Novo skrapovanje završeno i sveži podaci su upisani u Supabase.")
+                } else {
+                    println("[WARN] Skraper je pokrenut ali nije pronašao nijedan film na sajtovima.")
+                }
+
+            } else {
+                println("[LOG] Podaci u bazi su sveži (Od danas su: $datumPoslednjegSkrapovanja). Skrapovanje je preskočeno!")
+
+                val filmoviIzBaze = repository.getAllScrapedMovies()
+                println("[LOG] Učitano ${filmoviIzBaze.size} filmova direktno iz Supabase-a za rad aplikacije.")
+            }
+
+        } catch (e: Exception) {
+            println("[ERROR] Greška tokom inicijalizacije podataka: ${e.localizedMessage}")
+            e.printStackTrace()
+        }
+    }
+}

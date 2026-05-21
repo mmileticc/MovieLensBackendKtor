@@ -161,8 +161,11 @@ class GeminiService(apiKey: String) {
             .build()
 
         val sb = StringBuilder()
+        val gemini31flashLite = "gemini-3.1-flash-lite"
+        val gemini35flash = "gemini-3.5-flash"
+        val gemini3flashpreview = "gemini-3-flash-preview" //KORISCEN DO SAD
         try {
-            client.models.generateContentStream("gemini-3-flash-preview", content, null)
+            client.models.generateContentStream(gemini31flashLite, content, null)
                 .forEach { response ->
                     val t = response.text()
                     if (!t.isNullOrEmpty()) sb.append(t)

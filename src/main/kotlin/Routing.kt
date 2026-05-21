@@ -1,5 +1,6 @@
 package com.milinko
 
+import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.scraping.model.ScrapedMovie
 import com.milinko.services.GeminiService
 import com.milinko.services.MovieCandidate
@@ -51,50 +52,12 @@ data class VisionSearchResponse(
 fun Application.configureRouting(
     geminiService: GeminiService,
     tmdbService: TmdbService,
-    privremenaBazaFilmova: List<ScrapedMovie>) {
+    repository: ScrapedMoviesRepository // PROMENA: Primamo repozitorijum
+) {
     routing {
         get("/") { call.respondText("OK") }
 
-        post("/chat") {
-            val req = call.receive<ChatRequest>()
-
-            // Logovanje pitanja u konzolu
-            println("\n[LOG] ${java.time.LocalTime.now()} | Zahtev: ${req.message}")
-
-            call.response.status(HttpStatusCode.OK)
-            call.respondTextWriter(contentType = ContentType.Text.Plain.withCharset(Charsets.UTF_8)) {
-                try {
-                    geminiService.streamChat(req.message).collect { chunk ->
-                        write(chunk)
-                        flush() // Gura podatke ka mreži momentalno
-                    }
-                    println("[LOG] Odgovor uspešno završen.")
-                } catch (e: Throwable) {
-                    println("[ERROR] Greška: ${e.message}")
-                    write("\n[Greška na serveru]: ${e.message}")
-                }
-            }
-        }
-
-        post("/chat/text") {
-            val message = call.receiveText().trim()
-            if (message.isEmpty()) return@post call.respond(HttpStatusCode.BadRequest)
-
-            println("\n[LOG] ${java.time.LocalTime.now()} | TEXT-ONLY: $message")
-
-            call.respondTextWriter(contentType = ContentType.Text.Plain.withCharset(Charsets.UTF_8)) {
-                try {
-                    geminiService.streamChat(message).collect { chunk ->
-                        write(chunk)
-                        flush()
-                    }
-                } catch (e: Throwable) {
-                    write("\n[Error]: ${e.message}")
-                }
-            }
-        }
-
-        // Multipart endpoint for text + image (vision)
+        // Endpoint za sliku (vision) + pretragu bioskopa
         post("/chat/vision") {
             val multipart = call.receiveMultipart()
             println("\n[LOG] ${java.time.LocalTime.now()} | IMAGE ONLY")
@@ -105,18 +68,12 @@ fun Application.configureRouting(
             multipart.forEachPart { part ->
                 when (part) {
                     is PartData.FormItem -> {
-                        if (part.name == "message") {
-                            message = part.value
-                        }
+                        if (part.name == "message") message = part.value
                     }
                     is PartData.FileItem -> {
                         if (part.name == "image") {
-                            val bytes = part.streamProvider().readBytes()
-                            imageBytes = bytes
-                            // Try to capture content type from upload
-                            part.contentType?.let { ct ->
-                                imageMime = ct.toString()
-                            }
+                            imageBytes = part.streamProvider().readBytes()
+                            part.contentType?.let { ct -> imageMime = ct.toString() }
                         }
                     }
                     else -> {}
@@ -138,10 +95,19 @@ fun Application.configureRouting(
             }
 
             val t0 = System.currentTimeMillis()
-            println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime} (message ignored)")
+            println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime}")
 
             try {
-                // 1) Detekcija kandidata sa timeoutom
+                // NOVO: Pre nego što krenemo u TMDB petlju, asinhrono povlačimo sve filmove iz Supabase baze
+                // Ovo radimo ovde kako bismo imali sveže podatke za upoređivanje
+                val filmoviIzBaze = try {
+                    repository.getAllScrapedMovies()
+                } catch (dbEx: Exception) {
+                    println("[ERROR] Neuspešno čitanje iz baze, nastavljam sa praznom listom: ${dbEx.message}")
+                    emptyList<ScrapedMovie>()
+                }
+
+                // 1) Detekcija kandidata sa timeoutom preko Gemini-ja
                 val (detected, tGeminiMs) = try {
                     val start = System.currentTimeMillis()
                     val detected = withTimeout(25_000) {
@@ -153,9 +119,9 @@ fun Application.configureRouting(
                 }
 
                 val candidatesTop3 = detected.candidates.take(3)
-                println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size} | top=${candidatesTop3.joinToString { it.title + (it.year?.let { y -> " ($y)" } ?: "") }}")
-
-                // 2) TMDB pretrage u paraleli (do 3)
+                println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
+                println("[LOG] Detected candidates: ${detected.candidates.joinToString { it.title }}")
+                // 2) TMDB pretrage u paraleli (do 3 kandidata)
                 val t3 = System.currentTimeMillis()
                 val resolutions = coroutineScope {
                     candidatesTop3.map { cand ->
@@ -164,28 +130,27 @@ fun Application.configureRouting(
                             val matches = try {
                                 tmdbService.searchMovies(cand.title, year)
                                     .take(5)
-                                    .map {
-                                        // MODIFIKACIJA: Pokretanje tvoje pomoćne metode nad privremenom bazom
+                                    .map { tmdbMovie ->
+                                        // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
                                         val pronadjeniBioskopi = proveriDostupnostUBioskopima(
-                                            tmdbOriginalTitle = it.originalTitle,
-                                            tmdbTitle = it.title,
-                                            privremenaBazaFilmova = privremenaBazaFilmova
+                                            tmdbOriginalTitle = tmdbMovie.originalTitle,
+                                            tmdbTitle = tmdbMovie.title,
+                                            privremenaBazaFilmova = filmoviIzBaze
                                         )
                                         TmdbMatch(
-                                            id = it.id,
-                                            title = it.title,
-                                            originalTitle = it.originalTitle,
-                                            releaseDate = it.releaseDate,
-                                            overview = it.overview,
-                                            posterPath = it.posterPath,
-                                            popularity = it.popularity,
-                                            voteAverage = it.voteAverage,
+                                            id = tmdbMovie.id,
+                                            title = tmdbMovie.title,
+                                            originalTitle = tmdbMovie.originalTitle,
+                                            releaseDate = tmdbMovie.releaseDate,
+                                            overview = tmdbMovie.overview,
+                                            posterPath = tmdbMovie.posterPath,
+                                            popularity = tmdbMovie.popularity,
+                                            voteAverage = tmdbMovie.voteAverage,
                                             cinemaShowtimes = pronadjeniBioskopi
                                         )
                                     }
                             } catch (ex: Exception) {
-                                // Logiraj i vrati prazan set za ovog kandidata (globalni status će i dalje biti 200)
-                                println("[ERROR] TMDB search failed for '${cand.title}' (${year ?: "?"}): ${ex.message}")
+                                println("[ERROR] TMDB search failed for '${cand.title}': ${ex.message}")
                                 emptyList()
                             }
                             CandidateResolution(candidate = cand, matches = matches)
@@ -193,7 +158,7 @@ fun Application.configureRouting(
                     }.awaitAll()
                 }
                 val tTmdbMs = System.currentTimeMillis() - t3
-                println("[LOG] TMDB done in ${tTmdbMs}ms | per-candidate matches: ${resolutions.joinToString { it.matches.size.toString() }}")
+                println("[LOG] TMDB done in ${tTmdbMs}ms")
 
                 val payload = VisionSearchResponse(
                     notMovieLike = detected.notMovieLike,
@@ -202,15 +167,14 @@ fun Application.configureRouting(
                     resolutions = resolutions
                 )
 
-                val total = System.currentTimeMillis() - t0
-                println("[LOG] /chat/vision total=${total}ms")
+                println("[LOG] /chat/vision total=${System.currentTimeMillis() - t0}ms")
                 call.respond(payload)
+
             } catch (e: IllegalStateException) {
-                // Pretpostavimo da je upstream problem (Gemini parsing/SDK ili TMDB HTTP)
-                println("[ERROR] Upstream failure: ${e.message}\n" + (e.stackTraceToString().lineSequence().take(10).joinToString("\n")))
+                println("[ERROR] Upstream failure: ${e.message}")
                 call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Upstream error"))
             } catch (e: Throwable) {
-                println("[ERROR] Unexpected: ${e.message}\n" + (e.stackTraceToString().lineSequence().take(10).joinToString("\n")))
+                println("[ERROR] Unexpected: ${e.message}")
                 call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
             }
         }
