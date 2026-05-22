@@ -15,7 +15,17 @@ object DatabaseFactory {
         val password = System.getenv("DB_PASSWORD")
             ?: throw IllegalStateException("DB_PASSWORD nije postavljen u Environment Variables.")
 
-          val jdbcUrl = "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0"
+        // Za Supabase pooler.supabase.com - trebaju dodatni parametri
+        val isPooler = host.contains("pooler.supabase.com")
+        val jdbcUrl = if (isPooler) {
+            // Connection pooler (port 6543) - zahteva extra parametri za SNI
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&application_name=movielens&options=-c%20search_path%3Dpublic"
+        } else {
+            // Direct connection (port 5432)
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0"
+        }
+
+        println("[DATABASE] Povezujem: $host:$port (${if (isPooler) "Pooler" else "Direct"})")
 
         Database.connect(
             url = jdbcUrl,
