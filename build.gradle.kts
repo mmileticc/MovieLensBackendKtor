@@ -67,5 +67,5 @@ dependencies {
     implementation("org.jetbrains.exposed:exposed-kotlin-datetime:0.41.1")
 
     // PostgreSQL drajver
-    implementation("org.postgresql:postgresql:42.7.2")
+    implementation("org.postgresql:postgresql:42.7.11")
 }

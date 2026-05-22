@@ -128,7 +128,7 @@ fun Application.configureRouting(
                         async {
                             val year = cand.year
                             val matches = try {
-                                tmdbService.searchMovies(cand.title, year)
+                                tmdbService.searchMovies(cand.title)
                                     .take(5)
                                     .map { tmdbMovie ->
                                         // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
@@ -152,6 +152,9 @@ fun Application.configureRouting(
                             } catch (ex: Exception) {
                                 println("[ERROR] TMDB search failed for '${cand.title}': ${ex.message}")
                                 emptyList()
+                            }
+                            for (match in matches) {
+                                println("[LOG] TMDB match: ${match.title} (${match.releaseDate})")
                             }
                             CandidateResolution(candidate = cand, matches = matches)
                         }
