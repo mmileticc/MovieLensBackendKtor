@@ -38,8 +38,6 @@ RUN apt-get update && apt-get install -y \
 # Kopiramo JAR fajl iz build stage-a
 COPY --from=builder /app/build/libs/*.jar /app/app.jar
 
-# Kopiramo sliku
-COPY --from=builder /app/"lepa sela.jpg" /app/
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
