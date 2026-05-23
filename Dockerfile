@@ -25,6 +25,50 @@ FROM eclipse-temurin:21-jre-jammy
 
 WORKDIR /app
 
+# Playwright native dependencies for Chromium/WebKit/Firefox on Ubuntu (single-service setup).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    libasound2 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    libxext6 \
+    libxshmfence1 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libgstreamer1.0-0 \
+    libgstreamer-plugins-base1.0-0 \
+    libatomic1 \
+    libwoff1 \
+    libvpx7 \
+    libevent-2.1-7 \
+    libopus0 \
+    libharfbuzz-icu0 \
+    libwebpdemux2 \
+    libenchant-2-2 \
+    libsecret-1-0 \
+    libhyphen0 \
+    libmanette-0.2-0 \
+    libflite1 \
+    libgles2 \
+    libx264-163 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Kopiramo JAR fajl iz build stage-a
 COPY --from=builder /app/build/libs/*.jar /app/app.jar
 
@@ -45,7 +89,7 @@ ENV GEMINI_API_KEY="" \
     DB_NAME="postgres" \
     DB_USER="postgres" \
     DB_PASSWORD="" \
-    SKIP_SCRAPING="true"
+    SKIP_SCRAPING="false"
 
 # Run the application
 CMD ["java", "-jar", "/app/app.jar"]
