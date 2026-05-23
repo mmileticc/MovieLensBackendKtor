@@ -21,31 +21,23 @@ RUN ./gradlew build -x test --no-daemon
 # ============================================
 # Stage 2: Runtime (samo ono što je potrebno)
 # ============================================
-FROM eclipse-temurin:21-jre-jammy
+FROM mcr.microsoft.com/playwright:latest
 
 WORKDIR /app
 
-# Instalirajmo Playwright dependencies (za scraping)
-RUN apt-get update && apt-get install -y \
-    libasound2 \
-    libgbm1 \
-    libnss3 \
-    libxss1 \
-    libx11-xcb1 \
-    libappindicator3-1 \
-    libindicator7 \
-    libxslt1.1 \
-    libgconf-2-4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgtk-3-0 \
-    ca-certificates \
+# Playwright base image already includes browsers and most native deps.
+# Install minimal tooling and then install a Temurin JRE so the Kotlin/Java jar
+# can run inside the same container.
+RUN apt-get update && apt-get install -y curl ca-certificates --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and install Eclipse Temurin JRE 21 (adjust URL/version if needed)
+ENV TEMURIN_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2+9/OpenJDK21U-jre_x64_linux_hotspot_21.0.2_9.tar.gz"
+RUN curl -fsSL "$TEMURIN_URL" -o /tmp/temurin.tar.gz \
+    && mkdir -p /opt/java \
+    && tar -xzf /tmp/temurin.tar.gz -C /opt/java --strip-components=1 \
+    && ln -s /opt/java/bin/java /usr/local/bin/java \
+    && rm /tmp/temurin.tar.gz
 
 # Kopiramo JAR fajl iz build stage-a
 COPY --from=builder /app/build/libs/*.jar /app/app.jar
