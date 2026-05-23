@@ -53,7 +53,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libgstreamer1.0-0 \
     libgstreamer-plugins-base1.0-0 \
+    libgstreamer-gl1.0-0 \
+    libgstreamer-plugins-bad1.0-0 \
     libatomic1 \
+    libxslt1.1 \
     libwoff1 \
     libvpx7 \
     libevent-2.1-7 \
