@@ -6,6 +6,7 @@ import com.microsoft.playwright.BrowserType
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.options.LoadState
+import com.microsoft.playwright.options.WaitForSelectorState
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.locations.LokacijeBioskopa
 import com.milinko.scraping.model.ScrapedMovie
@@ -23,6 +24,8 @@ data class CineplexxDeepDetails(
 class CineplexxScraper : CinemaScraper {
     override val cinemaName = "Cineplexx"
     private val baseUrl = "https://www.cineplexx.rs"
+    private val deepDetailsTimeoutMs =
+        (System.getenv("PLAYWRIGHT_DEEP_TIMEOUT_MS")?.toDoubleOrNull() ?: 25000.0)
 
     override fun scrape(date: LocalDate): List<ScrapedMovie> {
         val tekuciFilmovi = mutableListOf<ScrapedMovie>()
@@ -204,48 +207,60 @@ class CineplexxScraper : CinemaScraper {
     private fun scrapeDeepDetails(context: BrowserContext, urlFilma: String): CineplexxDeepDetails {
         if (urlFilma.isEmpty()) return CineplexxDeepDetails(null, emptyList())
 
-        val pronadjeneLokacije = mutableListOf<String>()
-        var originalniNaslov: String? = null
-        val privremenaStranica = context.newPage()
+        val maxAttempts = 2
 
-        try {
-            privremenaStranica.route("**/*") { route ->
-                val resourceType = route.request().resourceType()
-                if (resourceType == "image" || resourceType == "font") {
-                    route.abort()
-                } else {
-                    route.resume()
+        repeat(maxAttempts) { index ->
+            val attempt = index + 1
+            val pronadjeneLokacije = mutableListOf<String>()
+            var originalniNaslov: String? = null
+            val privremenaStranica = context.newPage()
+
+            try {
+                privremenaStranica.route("**/*") { route ->
+                    val resourceType = route.request().resourceType()
+                    if (resourceType == "image" || resourceType == "font") {
+                        route.abort()
+                    } else {
+                        route.resume()
+                    }
                 }
-            }
 
-            privremenaStranica.navigate(urlFilma)
-            privremenaStranica.waitForLoadState(LoadState.NETWORKIDLE)
-            privremenaStranica.waitForSelector(".s-entity-details, .b-entity-content__title", Page.WaitForSelectorOptions().setTimeout(10000.0))
+                privremenaStranica.navigate(urlFilma)
+                privremenaStranica.waitForLoadState(LoadState.DOMCONTENTLOADED)
+                privremenaStranica.waitForSelector(
+                    ".s-entity-details, .b-entity-content__title",
+                    Page.WaitForSelectorOptions()
+                        .setState(WaitForSelectorState.ATTACHED)
+                        .setTimeout(deepDetailsTimeoutMs)
+                )
 
-            val doc = Jsoup.parse(privremenaStranica.content())
+                val doc = Jsoup.parse(privremenaStranica.content())
 
-            // Izvlačenje originalnog naslova
-            val strongTag = doc.select("strong:contains(Originalni naslov)").first()
-            val naslovTekst = strongTag?.nextElementSibling()?.text()?.trim() ?: ""
-            if (naslovTekst.isNotEmpty()) {
-                originalniNaslov = naslovTekst
-            }
-
-            // Izvlačenje lokacija
-            val bioskopiLinkovi = doc.select("a.b-entity-content__title")
-            for (link in bioskopiLinkovi) {
-                val imeBioskopa = link.text().trim()
-                if (imeBioskopa.isNotEmpty() && !pronadjeneLokacije.contains(imeBioskopa)) {
-                    pronadjeneLokacije.add(imeBioskopa)
+                // Izvlačenje originalnog naslova
+                val strongTag = doc.select("strong:contains(Originalni naslov)").first()
+                val naslovTekst = strongTag?.nextElementSibling()?.text()?.trim() ?: ""
+                if (naslovTekst.isNotEmpty()) {
+                    originalniNaslov = naslovTekst
                 }
-            }
 
-        } catch (e: Exception) {
-            println("[$cinemaName] Greška pri dubokom čitanju: ${e.message}")
-        } finally {
-            privremenaStranica.close()
+                // Izvlačenje lokacija
+                val bioskopiLinkovi = doc.select("a.b-entity-content__title")
+                for (link in bioskopiLinkovi) {
+                    val imeBioskopa = link.text().trim()
+                    if (imeBioskopa.isNotEmpty() && !pronadjeneLokacije.contains(imeBioskopa)) {
+                        pronadjeneLokacije.add(imeBioskopa)
+                    }
+                }
+
+                return CineplexxDeepDetails(originalniNaslov, pronadjeneLokacije)
+            } catch (e: Exception) {
+                val suffix = if (attempt < maxAttempts) " - retrying" else ""
+                println("[$cinemaName] Greška pri dubokom čitanju (attempt $attempt/$maxAttempts): ${e.message}$suffix")
+            } finally {
+                privremenaStranica.close()
+            }
         }
 
-        return CineplexxDeepDetails(originalniNaslov, pronadjeneLokacije)
+        return CineplexxDeepDetails(null, emptyList())
     }
 }
