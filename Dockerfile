@@ -27,6 +27,7 @@ WORKDIR /app
 
 # Instalirajmo Playwright dependencies (za scraping)
 RUN apt-get update && apt-get install -y \
+    libasound2 \
     libgbm1 \
     libnss3 \
     libxss1 \
@@ -34,6 +35,14 @@ RUN apt-get update && apt-get install -y \
     libindicator7 \
     libxslt1.1 \
     libgconf-2-4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgtk-3-0 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
