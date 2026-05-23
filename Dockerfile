@@ -19,25 +19,11 @@ RUN chmod +x ./gradlew
 RUN ./gradlew build -x test --no-daemon
 
 # ============================================
-# Stage 2: Runtime (samo ono što je potrebno)
+# Stage 2: Runtime (lightweight web service)
 # ============================================
-FROM mcr.microsoft.com/playwright:latest
+FROM eclipse-temurin:21-jre-jammy
 
 WORKDIR /app
-
-# Playwright base image already includes browsers and most native deps.
-# Install minimal tooling and then install a Temurin JRE so the Kotlin/Java jar
-# can run inside the same container.
-RUN apt-get update && apt-get install -y curl ca-certificates --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-# Download and install Eclipse Temurin JRE 21 (adjust URL/version if needed)
-ENV TEMURIN_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2+9/OpenJDK21U-jre_x64_linux_hotspot_21.0.2_9.tar.gz"
-RUN curl -fsSL "$TEMURIN_URL" -o /tmp/temurin.tar.gz \
-    && mkdir -p /opt/java \
-    && tar -xzf /tmp/temurin.tar.gz -C /opt/java --strip-components=1 \
-    && ln -s /opt/java/bin/java /usr/local/bin/java \
-    && rm /tmp/temurin.tar.gz
 
 # Kopiramo JAR fajl iz build stage-a
 COPY --from=builder /app/build/libs/*.jar /app/app.jar
@@ -51,14 +37,15 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 EXPOSE 8080
 
 # Environment varijable (trebalo bi postaviti na Render-u)
+# By default we disable scraping in the web service; scraping runs in a separate worker.
 ENV GEMINI_API_KEY="" \
     TMDB_API_KEY="" \
     DB_HOST="" \
     DB_PORT="6543" \
     DB_NAME="postgres" \
     DB_USER="postgres" \
-    DB_PASSWORD=""
+    DB_PASSWORD="" \
+    SKIP_SCRAPING="true"
 
-# Pokretnji command
+# Run the application
 CMD ["java", "-jar", "/app/app.jar"]
-
