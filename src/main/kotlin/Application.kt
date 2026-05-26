@@ -60,7 +60,7 @@ fun Application.module() {
 
     DatabaseFactory.init()
 
-    configureScrapingLifecycle()
+    //configureScrapingLifecycle()
 
     val repository = ScrapedMoviesRepository()
 

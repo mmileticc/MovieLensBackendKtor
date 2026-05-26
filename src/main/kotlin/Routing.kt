@@ -187,26 +187,69 @@ fun Application.configureRouting(
  * Pomoćna metoda koja pretražuje lokalnu privremenu bazu skrapovanih filmova.
  * Koristi originalni naslov sa TMDB-a kao primarni izvor istine, a domaći naslov kao fallback.
  */
-private fun proveriDostupnostUBioskopima(
+//private fun proveriDostupnostUBioskopima(
+//    tmdbOriginalTitle: String?,
+//    tmdbTitle: String,
+//    privremenaBazaFilmova: List<ScrapedMovie>
+//): List<ScrapedMovie> {
+//    if (privremenaBazaFilmova.isEmpty()) return emptyList()
+//
+//    val cistiOriginalni = tmdbOriginalTitle?.lowercase()?.trim() ?: ""
+//    val cistiDomaci = tmdbTitle.lowercase().trim()
+//
+//    return privremenaBazaFilmova.filter { film ->
+//        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
+//        val bioskopDomaci = film.title.lowercase().trim()
+//
+//        // 1. Prvo i najjače poklapanje: poredimo originalne naslove (izbegavamo probleme sa prevodom)
+//        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiOriginalni)) ||
+//                (cistiOriginalni.isNotEmpty() && bioskopDomaci.contains(cistiOriginalni)) ||
+//
+//                // 2. Fallback: poredimo domaće naslove ako se poklope na sajtovima
+//                bioskopDomaci.contains(cistiDomaci) ||
+//                (bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiDomaci))
+//    }
+//}
+
+
+ private fun proveriDostupnostUBioskopima(
     tmdbOriginalTitle: String?,
     tmdbTitle: String,
     privremenaBazaFilmova: List<ScrapedMovie>
 ): List<ScrapedMovie> {
     if (privremenaBazaFilmova.isEmpty()) return emptyList()
 
-    val cistiOriginalni = tmdbOriginalTitle?.lowercase()?.trim() ?: ""
-    val cistiDomaci = tmdbTitle.lowercase().trim()
+    val cistiOriginalni = normalizeTitleForMatch(tmdbOriginalTitle ?: "")
+    val cistiDomaci = normalizeTitleForMatch(tmdbTitle)
 
     return privremenaBazaFilmova.filter { film ->
-        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
-        val bioskopDomaci = film.title.lowercase().trim()
+        val bioskopOriginalni = normalizeTitleForMatch(film.originalTitle ?: "")
+        val bioskopDomaci = normalizeTitleForMatch(film.title)
 
-        // 1. Prvo i najjače poklapanje: poredimo originalne naslove (izbegavamo probleme sa prevodom)
-        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiOriginalni)) ||
-                (cistiOriginalni.isNotEmpty() && bioskopDomaci.contains(cistiOriginalni)) ||
-
-                // 2. Fallback: poredimo domaće naslove ako se poklope na sajtovima
-                bioskopDomaci.contains(cistiDomaci) ||
-                (bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiDomaci))
+        // Strogo poređenje (normalizovano), bez contains - izbegava lažna poklapanja za nastavke (npr. "... 2").
+        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiOriginalni, bioskopOriginalni)) ||
+                (cistiOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiOriginalni, bioskopDomaci)) ||
+                titlesStrictlyMatch(cistiDomaci, bioskopDomaci) ||
+                (bioskopOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiDomaci, bioskopOriginalni))
     }
+}
+
+private fun titlesStrictlyMatch(left: String, right: String): Boolean {
+    if (left.isBlank() || right.isBlank()) return false
+    if (left == right) return true
+
+    // Fallback: ignoriši samo početni engleski član (The/A/An), bez "contains" logike.
+    fun withoutArticle(value: String): String = value.replace(Regex("^(the|a|an)\\s+"), "")
+    return withoutArticle(left) == withoutArticle(right)
+}
+
+private fun normalizeTitleForMatch(value: String): String {
+    return value
+        .lowercase()
+        // Ukloni česte tehničke oznake formata koje često dođu iz cinema title-a.
+        .replace(Regex("\\b(2d|3d|4dx|imax|atm[oa]s|sub|dub|sinhro|titlovano)\\b"), " ")
+        .replace(Regex("[\\[\\](){}]"), " ")
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }
