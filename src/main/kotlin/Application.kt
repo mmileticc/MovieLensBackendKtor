@@ -62,10 +62,7 @@ fun Application.module() {
 
     DatabaseFactory.init()
 
-
-
     val repository = ScrapedMoviesRepository()
-
 
     // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
     val apiKey = System.getenv("GEMINI_API_KEY")
@@ -78,8 +75,14 @@ fun Application.module() {
 
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
+    val scrapingBoolean = System.getenv("SCRAPING_BOOLEAN")
+        ?: environment.config.propertyOrNull("ktor.scraping.enabled")?.getString()
+        ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
 
-    configureScrapingLifecycle(tmdbService)
+
+    if (scrapingBoolean.lowercase() == "true") {
+        configureScrapingLifecycle(tmdbService)
+    }
     configureRouting(geminiService, tmdbService, repository)
 }
 

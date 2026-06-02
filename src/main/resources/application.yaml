@@ -8,6 +8,9 @@ ktor:
     apiKey: ${GEMINI_API_KEY}
   tmdb:
     apiKey: ${TMDB_API_KEY}
+  scraping:
+    enabled: ${SCRAPING_BOOLEAN}
+
 
 kind: Application
 
