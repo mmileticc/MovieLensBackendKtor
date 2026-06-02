@@ -1,6 +1,6 @@
 package com.milinko.scraping.model
 
-import java.time.Instant
+import kotlinx.serialization.SerialName
 
 @kotlinx.serialization.Serializable
 data class ScrapedMovie(
@@ -11,6 +11,7 @@ data class ScrapedMovie(
     val latitude: Double?,          // Dodato za geo-filtriranje
     val longitude: Double?,         // Dodato za geo-filtriranje
     val bookingUrl: String,
-    //val scrapedAt: Instant = Instant.now(),
-    val isUpcoming: Boolean = false
+    val isUpcoming: Boolean = false,
+    @SerialName("tmdb_id")
+    val tmdbId: Int? = null,
 )

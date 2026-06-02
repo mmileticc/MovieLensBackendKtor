@@ -1,5 +1,6 @@
 package com.milinko.services
 
+import com.milinko.scraping.model.ScrapedMovie
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
@@ -12,6 +13,7 @@ import io.ktor.http.*
 import io.ktor.http.HttpHeaders.ContentEncoding
 import io.netty.handler.codec.compression.StandardCompressionOptions.deflate
 import io.netty.handler.codec.compression.StandardCompressionOptions.gzip
+import kotlinx.coroutines.delay
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -73,6 +75,10 @@ class TmdbService(private val apiKey: String) {
             throw IllegalStateException("TMDB search error: HTTP ${response.status.value}. $hint Body=${bodyText.take(300)}")
         }
         val body: TmdbSearchResponse = response.body()
+        println("[DEBUG] Broj rezultata u JSON-u: ${body.results.size}")
+        if (body.results.isNotEmpty()) {
+            println("[DEBUG] Prvi rezultat ID: ${body.results.first().id}")
+        }
         return body.results.map { r ->
             TmdbMovieMatch(
                 id = r.id,
@@ -96,7 +102,7 @@ private data class TmdbSearchResponse(
 
 @Serializable
 private data class TmdbMovieDto(
-    val id: Int,
+    val id: Int? = null,
     val title: String? = null,
     @SerialName("original_title") val originalTitle: String? = null,
     @SerialName("release_date") val releaseDate: String? = null,
@@ -107,7 +113,7 @@ private data class TmdbMovieDto(
 )
 
 data class TmdbMovieMatch(
-    val id: Int,
+    val id: Int?,
     val title: String,
     val originalTitle: String? = null,
     val releaseDate: String? = null,
@@ -116,3 +122,40 @@ data class TmdbMovieMatch(
     val popularity: Double? = null,
     val voteAverage: Double? = null
 )
+
+
+/**
+ * Proširenje koje obogaćuje listu ScrapedMovie objekata sa TMDB ID-jevima.
+ * Vraća Mapu gde je ključ originalni ScrapedMovie, a vrednost pronađeni TMDB ID.
+ */
+suspend fun List<ScrapedMovie>.enrichWithTmdbIds(
+    tmdbService: TmdbService
+): List<ScrapedMovie> { // Vrati listu, ne mapu
+    val titleCache = mutableMapOf<String, Int?>()
+
+    return this.map { movie ->
+        val searchKey = (movie.originalTitle ?: movie.title).trim().lowercase()
+
+        // Ako imamo u kešu, odmah iskoristi
+        if (titleCache.containsKey(searchKey)) {
+            return@map movie.copy(tmdbId = titleCache[searchKey])
+        }
+
+        // Ako nema u kešu, pozovi TMDB
+        val searchResults = try {
+            tmdbService.searchMovies(movie.originalTitle ?: movie.title)
+        } catch (e: Exception) {
+            println("[ERROR] Enrichment failed for ${movie.title}: ${e.message}")
+            emptyList<TmdbMovieMatch>()
+        }
+
+        val foundId = searchResults.firstOrNull()?.id
+        titleCache[searchKey] = foundId
+
+        // PAUZA: Obavezno delay
+        delay(300)
+
+        // Vrati novi objekat sa popunjenim ID-jem
+        movie.copy(tmdbId = foundId)
+    }
+}

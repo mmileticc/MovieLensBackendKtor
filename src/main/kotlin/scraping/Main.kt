@@ -1,5 +1,6 @@
 package com.milinko.scraping
 import com.milinko.scraping.scraper.ArenaCineplexScraper
+import com.milinko.scraping.scraper.CineGrandScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import scraping.ScrapingEngine
@@ -12,9 +13,10 @@ fun main() {
     println("=== INICIJALIZACIJA SISTEMA ZA SKRAPOVANJE ===")
 
     val aktivniScraperi = listOf(
-        MtsDvoranaScraper(),
-        CineplexxScraper(),
-        ArenaCineplexScraper()
+//        MtsDvoranaScraper(),
+//        CineplexxScraper(),
+//        ArenaCineplexScraper(),
+        CineGrandScraper()
     )
 
     val engine = ScrapingEngine(aktivniScraperi)

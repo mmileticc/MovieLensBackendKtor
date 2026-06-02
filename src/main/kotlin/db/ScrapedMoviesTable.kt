@@ -22,6 +22,7 @@ object ScrapedMoviesTable : Table("scraped_movies") {
     val bookingUrl = text("booking_url")
     val isUpcoming = bool("is_upcoming").default(false)
 
+    val tmdbId = integer("tmdb_id").nullable()
     val createdAt = datetime("created_at")
     override val primaryKey = PrimaryKey(id)
 }
@@ -43,6 +44,7 @@ class ScrapedMoviesRepository {
                 tableRow[longitude] = movie.longitude
                 tableRow[bookingUrl] = movie.bookingUrl
                 tableRow[isUpcoming] = movie.isUpcoming
+                tableRow[tmdbId] = movie.tmdbId
             }
         }
         println("[DATABASE] Skrapovani filmovi (${moviesList.size}) su uspešno sačuvani u Supabase!")
@@ -74,7 +76,8 @@ class ScrapedMoviesRepository {
                 latitude = row[ScrapedMoviesTable.latitude],
                 longitude = row[ScrapedMoviesTable.longitude],
                 bookingUrl = row[ScrapedMoviesTable.bookingUrl],
-                isUpcoming = row[ScrapedMoviesTable.isUpcoming]
+                isUpcoming = row[ScrapedMoviesTable.isUpcoming],
+                tmdbId = row[ScrapedMoviesTable.tmdbId]
             )
         }
     }

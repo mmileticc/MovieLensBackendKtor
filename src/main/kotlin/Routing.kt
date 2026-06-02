@@ -23,7 +23,7 @@ data class ChatRequest(val message: String)
 
 @Serializable
 data class TmdbMatch(
-    val id: Int,
+    val id: Int?,
     val title: String,
     val originalTitle: String? = null,
     val releaseDate: String? = null,
@@ -132,7 +132,8 @@ fun Application.configureRouting(
                                     .take(5)
                                     .map { tmdbMovie ->
                                         // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
-                                        val pronadjeniBioskopi = proveriDostupnostUBioskopima(
+                                        val pronadjeniBioskopi = proveriDostupnostUBioskopimaPoPrioritetu(
+                                            tmdbId = tmdbMovie.id,
                                             tmdbOriginalTitle = tmdbMovie.originalTitle,
                                             tmdbTitle = tmdbMovie.title,
                                             privremenaBazaFilmova = filmoviIzBaze
@@ -183,70 +184,75 @@ fun Application.configureRouting(
         }
     }
 }
-/**
- * Pomoćna metoda koja pretražuje lokalnu privremenu bazu skrapovanih filmova.
- * Koristi originalni naslov sa TMDB-a kao primarni izvor istine, a domaći naslov kao fallback.
- */
-//private fun proveriDostupnostUBioskopima(
-//    tmdbOriginalTitle: String?,
-//    tmdbTitle: String,
-//    privremenaBazaFilmova: List<ScrapedMovie>
-//): List<ScrapedMovie> {
-//    if (privremenaBazaFilmova.isEmpty()) return emptyList()
-//
-//    val cistiOriginalni = tmdbOriginalTitle?.lowercase()?.trim() ?: ""
-//    val cistiDomaci = tmdbTitle.lowercase().trim()
-//
-//    return privremenaBazaFilmova.filter { film ->
-//        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
-//        val bioskopDomaci = film.title.lowercase().trim()
-//
-//        // 1. Prvo i najjače poklapanje: poredimo originalne naslove (izbegavamo probleme sa prevodom)
-//        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiOriginalni)) ||
-//                (cistiOriginalni.isNotEmpty() && bioskopDomaci.contains(cistiOriginalni)) ||
-//
-//                // 2. Fallback: poredimo domaće naslove ako se poklope na sajtovima
-//                bioskopDomaci.contains(cistiDomaci) ||
-//                (bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiDomaci))
-//    }
-//}
 
-
- private fun proveriDostupnostUBioskopima(
+private fun proveriDostupnostUBioskopimaPoPrioritetu(
+    tmdbId: Int?,
     tmdbOriginalTitle: String?,
     tmdbTitle: String,
     privremenaBazaFilmova: List<ScrapedMovie>
 ): List<ScrapedMovie> {
     if (privremenaBazaFilmova.isEmpty()) return emptyList()
 
-    val cistiOriginalni = normalizeTitleForMatch(tmdbOriginalTitle ?: "")
-    val cistiDomaci = normalizeTitleForMatch(tmdbTitle)
-
-    return privremenaBazaFilmova.filter { film ->
-        val bioskopOriginalni = normalizeTitleForMatch(film.originalTitle ?: "")
-        val bioskopDomaci = normalizeTitleForMatch(film.title)
-
-        // Strogo poređenje (normalizovano), bez contains - izbegava lažna poklapanja za nastavke (npr. "... 2").
-        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiOriginalni, bioskopOriginalni)) ||
-                (cistiOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiOriginalni, bioskopDomaci)) ||
-                titlesStrictlyMatch(cistiDomaci, bioskopDomaci) ||
-                (bioskopOriginalni.isNotEmpty() && titlesStrictlyMatch(cistiDomaci, bioskopOriginalni))
+    // 1) Najjači signal: ako TMDB ID postoji, probamo prvo tačno poklapanje po tmdbId.
+    if (tmdbId != null) {
+        val poId = privremenaBazaFilmova.filter { it.tmdbId == tmdbId }
+        if (poId.isNotEmpty()) return poId
     }
-}
-
-private fun titlesStrictlyMatch(left: String, right: String): Boolean {
-    if (left.isBlank() || right.isBlank()) return false
-    if (left == right) return true
-
-    // Fallback: ignoriši samo početni engleski član (The/A/An), bez "contains" logike.
-    fun withoutArticle(value: String): String = value.replace(Regex("^(the|a|an)\\s+"), "")
-    return withoutArticle(left) == withoutArticle(right)
+    return emptyList()
+//
+//    val cistiOriginalni = tmdbOriginalTitle?.lowercase()?.trim() ?: ""
+//    val cistiDomaci = tmdbTitle.lowercase().trim()
+//
+//    // 2) Ako ID nije dao rezultat (ili ne postoji), probamo najstrožu tekstualnu pretragu.
+//    val strogo = privremenaBazaFilmova.filter { film ->
+//        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
+//        val bioskopDomaci = film.title.lowercase().trim()
+//
+//        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni == cistiOriginalni) ||
+//            (cistiOriginalni.isNotEmpty() && bioskopDomaci == cistiOriginalni) ||
+//            bioskopDomaci == cistiDomaci ||
+//            (bioskopOriginalni.isNotEmpty() && bioskopOriginalni == cistiDomaci)
+//    }
+//    if (strogo.isNotEmpty()) return strogo
+//
+//    // 3) Fallback: contains, ali i dalje sa originalnim naslovom kao primarnim izvorom.
+//    val contains = privremenaBazaFilmova.filter { film ->
+//        val bioskopOriginalni = film.originalTitle?.lowercase()?.trim() ?: ""
+//        val bioskopDomaci = film.title.lowercase().trim()
+//
+//        (cistiOriginalni.isNotEmpty() && bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiOriginalni)) ||
+//            (cistiOriginalni.isNotEmpty() && bioskopDomaci.contains(cistiOriginalni)) ||
+//            bioskopDomaci.contains(cistiDomaci) ||
+//            (bioskopOriginalni.isNotEmpty() && bioskopOriginalni.contains(cistiDomaci))
+//    }
+//
+//    if (contains.isNotEmpty()) return contains
+//
+//    // 4) Najblaža varijanta ostaje poslednja rezerva.
+//    return privremenaBazaFilmova.filter { film ->
+//        val bioskopOriginalni = normalizeTitleForMatch(film.originalTitle ?: "")
+//        val bioskopDomaci = normalizeTitleForMatch(film.title)
+//        val originalNorm = normalizeTitleForMatch(tmdbOriginalTitle ?: "")
+//        val domaciNorm = normalizeTitleForMatch(tmdbTitle)
+//
+//        bioskopOriginalni.isNotEmpty() && originalNorm.isNotEmpty() && (
+//            bioskopOriginalni == originalNorm ||
+//                bioskopOriginalni.contains(originalNorm) ||
+//                originalNorm.contains(bioskopOriginalni) ||
+//                bioskopDomaci == originalNorm ||
+//                bioskopDomaci.contains(originalNorm) ||
+//                originalNorm.contains(bioskopDomaci) ||
+//                bioskopDomaci == domaciNorm ||
+//                bioskopDomaci.contains(domaciNorm) ||
+//                domaciNorm.contains(bioskopDomaci)
+//        )
+//    }
 }
 
 private fun normalizeTitleForMatch(value: String): String {
     return value
         .lowercase()
-        // Ukloni česte tehničke oznake formata koje često dođu iz cinema title-a.
+        .replace("&", " and ")
         .replace(Regex("\\b(2d|3d|4dx|imax|atm[oa]s|sub|dub|sinhro|titlovano)\\b"), " ")
         .replace(Regex("[\\[\\](){}]"), " ")
         .replace(Regex("[^\\p{L}\\p{N}]+"), " ")

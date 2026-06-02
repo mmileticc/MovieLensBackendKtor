@@ -3,10 +3,12 @@ package com.milinko
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.scraping.scraper.ArenaCineplexScraper
+import com.milinko.scraping.scraper.CineGrandScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import com.milinko.services.GeminiService
 import com.milinko.services.TmdbService
+import com.milinko.services.enrichWithTmdbIds
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -60,7 +62,7 @@ fun Application.module() {
 
     DatabaseFactory.init()
 
-    //configureScrapingLifecycle()
+
 
     val repository = ScrapedMoviesRepository()
 
@@ -77,6 +79,7 @@ fun Application.module() {
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
 
+    configureScrapingLifecycle(tmdbService)
     configureRouting(geminiService, tmdbService, repository)
 }
 
@@ -84,7 +87,7 @@ fun Application.module() {
 data class ErrorResponse(val error: String)
 
 
-fun Application.configureScrapingLifecycle() {
+fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
     val repository = ScrapedMoviesRepository()
 
     launch {
@@ -107,16 +110,28 @@ fun Application.configureScrapingLifecycle() {
                 val aktivniScraperi = listOf(
                     MtsDvoranaScraper(),
                     CineplexxScraper(),
-                    ArenaCineplexScraper()
+                    ArenaCineplexScraper(),
+                    CineGrandScraper()
                 )
                 val engine = ScrapingEngineConcurrent(aktivniScraperi)
                 val skrapovaniFilmovi = engine.runAllScrapers(danasnjiDatum)
+                //
 
+                //dodati zvakom filmo njegov tmdb id
+                println("[LOG] Pretraga TMDB ID-ja svakom pronadjenom filmu.")
+                val obogaceniFilmovi = skrapovaniFilmovi.enrichWithTmdbIds(tmdbService)
+                println("[LOG] Zacrsena pretraga TMDB ID-jeva.")
+
+                //
                 if (skrapovaniFilmovi.isNotEmpty()) {
-                    // OPCIONO: Ako želiš da obrišeš stare filmove pre nego što upišeš nove, ovde možeš dodati brisanje,
-                    // ali pošto praviš fiksni sat kasnije, za prvu ruku samo upisujemo.
-                    repository.insertScrapedMovies(skrapovaniFilmovi)
+
+
+                    val saIdjem = obogaceniFilmovi.count { it.tmdbId != null }
+                    println("[LOG] Enrichment gotov. Pronadjeno TMDB ID-jeva: $saIdjem od ${obogaceniFilmovi.size}")
+
+                    repository.insertScrapedMovies(obogaceniFilmovi)
                     println("[LOG] Novo skrapovanje završeno i sveži podaci su upisani u Supabase.")
+
                 } else {
                     println("[WARN] Skraper je pokrenut ali nije pronašao nijedan film na sajtovima.")
                 }
