@@ -68,4 +68,14 @@ dependencies {
 
     // PostgreSQL drajver
     implementation("org.postgresql:postgresql:42.7.11")
+
+    // Firebase Admin SDK
+    implementation("com.google.firebase:firebase-admin:9.4.2")
+
+    // JWT za backend tokene
+    implementation("com.auth0:java-jwt:4.4.0")
+
+    // Ktor JWT auth plugin
+    implementation("io.ktor:ktor-server-auth-jvm")
+    implementation("io.ktor:ktor-server-auth-jwt-jvm")
 }

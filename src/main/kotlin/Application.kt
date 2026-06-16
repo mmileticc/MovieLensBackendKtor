@@ -1,7 +1,11 @@
 package com.milinko
 
+import com.auth0.jwt.JWT
+import com.auth0.jwt.algorithms.Algorithm
 import com.milinko.db.DatabaseFactory
+import com.milinko.db.FirebaseAdminInitializer
 import com.milinko.db.ScrapedMoviesRepository
+import com.milinko.db.UserDao
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
 import com.milinko.scraping.scraper.CineplexxScraper
@@ -12,6 +16,9 @@ import com.milinko.services.enrichWithTmdbIds
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
@@ -21,6 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
+import java.util.UUID
 
 /**
  * Inicijalizacija Ktor aplikacije: ContentNegotiation (kotlinx-json),
@@ -32,6 +40,14 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    // Inicijalizuj Firebase Admin SDK
+    try {
+        FirebaseAdminInitializer.init()
+    } catch (e: Exception) {
+        println("[ERROR] Firebase init failed: ${e.message}")
+        // Ne prekidamo aplikaciju ako Firebase nije dostupan
+    }
+
     // Plugins
     install(ContentNegotiation) {
         json(
@@ -56,13 +72,44 @@ fun Application.module() {
         allowNonSimpleContentTypes = true
         allowMethod(HttpMethod.Post)
         allowMethod(HttpMethod.Get)
+        allowMethod(HttpMethod.Put)
+        allowMethod(HttpMethod.Delete)
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Authorization)
+    }
+
+    // JWT Authentication Plugin
+    val jwtSigningKey = System.getenv("APP_JWT_SIGNING_KEY")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: throw IllegalStateException("APP_JWT_SIGNING_KEY nije postavljen ili je prazan")
+
+    install(Authentication) {
+        jwt("auth-jwt") {
+            realm = "MovieLens Backend"
+            verifier(
+                JWT.require(Algorithm.HMAC256(jwtSigningKey))
+                    .build()
+            )
+            validate { credential ->
+                try {
+                    val userId = credential.payload.subject
+                    if (userId != null && userId.isNotEmpty()) {
+                        JWTPrincipal(credential.payload)
+                    } else {
+                        null
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
     }
 
     DatabaseFactory.init()
 
     val repository = ScrapedMoviesRepository()
+    val userDao = UserDao()
 
     // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
     val apiKey = System.getenv("GEMINI_API_KEY")
@@ -83,7 +130,7 @@ fun Application.module() {
     if (scrapingBoolean.lowercase() == "true") {
         configureScrapingLifecycle(tmdbService)
     }
-    configureRouting(geminiService, tmdbService, repository)
+    configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
 }
 
 @kotlinx.serialization.Serializable
