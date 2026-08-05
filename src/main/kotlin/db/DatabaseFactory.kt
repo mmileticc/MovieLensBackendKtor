@@ -37,13 +37,22 @@ object DatabaseFactory {
         )
         println("[DATABASE] Uspešno uspostavljena veza sa Supabase PostgreSQL bazom!")
 
-        // Šema se generiše direktno iz Exposed tabela (UsersTable, ScrapedMoviesTable) — jedan
-        // izvor istine u kodu, bez ručnog SQL-a koji vremenom ode iz sinhronizacije sa kodom.
-        // createMissingTablesAndColumns je idempotentan: kreira ono što nedostaje, ne dira postojeće.
+        // Šema se generiše direktno iz Exposed tabela — jedan izvor istine u kodu, bez ručnog
+        // SQL-a koji vremenom ode iz sinhronizacije sa kodom. createMissingTablesAndColumns je
+        // idempotentan: kreira ono što nedostaje (tabele/kolone), ne dira postojeće. NAPOMENA:
+        // ne menja CHECK constraint-e na već postojećim tabelama — za to videti jednokratnu
+        // migraciju u MOVIELENS_ROADMAP.md (user_actions: WATCHLIST/WATCHED + rating 1-10).
         transaction {
-            SchemaUtils.createMissingTablesAndColumns(UsersTable, ScrapedMoviesTable)
+            SchemaUtils.createMissingTablesAndColumns(
+                UsersTable,
+                ScrapedMoviesTable,
+                MoviesTable,
+                UserActionsTable,
+                FriendshipsTable,
+                NotificationsTable
+            )
         }
-        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies).")
+        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)

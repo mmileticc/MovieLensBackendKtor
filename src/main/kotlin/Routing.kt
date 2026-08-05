@@ -89,7 +89,7 @@ fun Application.configureRouting(
 
                 // Issue backend JWT token (24h expiry)
                 val token = JWT.create()
-                    .withSubject(user.id.toString())
+                    .withSubject(user.id)
                     .withClaim("firebaseUid", uid)
                     .withExpiresAt(Date.from(Instant.now().plusSeconds(86400)))
                     .sign(Algorithm.HMAC256(jwtSigningKey))
@@ -99,7 +99,7 @@ fun Application.configureRouting(
                 call.respond(AuthResponse(
                     appToken = token,
                     user = UserDto(
-                        id = user.id.toString(),
+                        id = user.id,
                         firebaseUid = uid,
                         username = user.username,
                         email = user.email,

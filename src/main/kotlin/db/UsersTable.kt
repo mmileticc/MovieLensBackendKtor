@@ -13,16 +13,25 @@ import org.jetbrains.exposed.sql.update
 import java.util.*
 
 /**
- * Users table za Firebase Auth integraciju
+ * Users table za Firebase Auth integraciju.
+ *
+ * NAPOMENA: stvarna Supabase tabela ima `id` kolonu tipa `text`, ne `uuid` (verovatno da bi
+ * ostalo prenosivo/jednostavno). Ranija verzija ovog fajla je pogrešno deklarisala `id` kao
+ * `uuid()`, što se "slučajno" nije lomilo jer su generisane vrednosti uvek bile validan UUID
+ * string, ali je bio type mismatch između koda i baze. Ovde generišemo isti format (random UUID)
+ * samo kao String, na varchar koloni, da se poklapa sa stvarnom šemom.
  */
 object UsersTable : Table("users") {
-    val id = uuid("id").autoGenerate()
+    val id = varchar("id", 64).clientDefault { UUID.randomUUID().toString() }
     val firebaseUid = varchar("firebase_uid", 255).uniqueIndex()
     val username = varchar("username", 255).nullable()
     val email = varchar("email", 255).nullable()
     val avatarUrl = text("avatar_url").nullable()
     val bio = text("bio").nullable()
     val subscriptionTier = varchar("subscription_tier", 50).default("free")
+    // Stvarna kolona je jsonb DEFAULT '[]' u Supabase-u; modelovano kao text dok se ne uvede
+    // jsonb podrška (exposed-json) i dok ne postoji stvarna funkcionalnost koja je koristi.
+    val roles = text("roles").nullable().default("[]")
     val createdAt = datetime("created_at").clientDefault {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)
     }
@@ -46,13 +55,14 @@ data class UserDto(
  * User entity klasa
  */
 data class User(
-    val id: UUID,
+    val id: String,
     val firebaseUid: String,
     val username: String?,
     val email: String?,
     val avatarUrl: String?,
     val bio: String? = null,
     val subscriptionTier: String = "free",
+    val roles: String? = null,
     val createdAt: kotlinx.datetime.LocalDateTime,
     val lastLogin: kotlinx.datetime.LocalDateTime?
 )
@@ -111,6 +121,7 @@ class UserDao {
                     avatarUrl = row[UsersTable.avatarUrl],
                     bio = row[UsersTable.bio],
                     subscriptionTier = row[UsersTable.subscriptionTier],
+                    roles = row[UsersTable.roles],
                     createdAt = row[UsersTable.createdAt],
                     lastLogin = row[UsersTable.lastLogin]
                 )
@@ -132,6 +143,7 @@ class UserDao {
                     avatarUrl = row[UsersTable.avatarUrl],
                     bio = row[UsersTable.bio],
                     subscriptionTier = row[UsersTable.subscriptionTier],
+                    roles = row[UsersTable.roles],
                     createdAt = row[UsersTable.createdAt],
                     lastLogin = row[UsersTable.lastLogin]
                 )
@@ -140,9 +152,9 @@ class UserDao {
     }
 
     /**
-     * Pronađi korisnika po UUID ID-u
+     * Pronađi korisnika po ID-u (text, ne uuid — vidi napomenu uz UsersTable)
      */
-    suspend fun findById(userId: UUID): User? = dbQuery {
+    suspend fun findById(userId: String): User? = dbQuery {
         UsersTable.select { UsersTable.id eq userId }
             .map { row ->
                 User(
@@ -153,6 +165,7 @@ class UserDao {
                     avatarUrl = row[UsersTable.avatarUrl],
                     bio = row[UsersTable.bio],
                     subscriptionTier = row[UsersTable.subscriptionTier],
+                    roles = row[UsersTable.roles],
                     createdAt = row[UsersTable.createdAt],
                     lastLogin = row[UsersTable.lastLogin]
                 )

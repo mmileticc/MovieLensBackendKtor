@@ -28,7 +28,6 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
-import java.util.UUID
 
 /**
  * Inicijalizacija Ktor aplikacije: ContentNegotiation (kotlinx-json),
@@ -141,6 +140,7 @@ fun Application.module() {
 
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
+    warmUpTmdbClient(tmdbService)
     val scrapingBoolean = System.getenv("SCRAPING_BOOLEAN")
         ?: environment.config.propertyOrNull("ktor.scraping.enabled")?.getString()
         ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
@@ -150,10 +150,30 @@ fun Application.module() {
         configureScrapingLifecycle(tmdbService)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
+    configureMovieRouting(tmdbService)
 }
 
 @kotlinx.serialization.Serializable
 data class ErrorResponse(val error: String)
+
+/**
+ * Prvi HTTPS pozivi ka TMDB posle boot-a servera (DNS + TLS handshake) znaju da budu sporiji
+ * od connect/request timeout-a, pa prvi pravi korisnički zahtevi ponekad puknu dok se konekcija
+ * ne "zagreje" (videti i getWithRetry u TmdbService). Ovde tiho odradimo taj "hladan start" u
+ * pozadini odmah pri startu servera, umesto da to iskusi korisnik. Kao bonus, ovim se odmah puni
+ * popularCache za /api/movies/trending i /featured.
+ */
+fun Application.warmUpTmdbClient(tmdbService: TmdbService) {
+    launch {
+        try {
+            println("[TMDB] Zagrevanje HTTP konekcije...")
+            val movies = tmdbService.getPopularMovies(1)
+            println("[TMDB] Zagrevanje uspešno (${movies.size} popularnih filmova učitano u keš).")
+        } catch (e: Exception) {
+            println("[WARN] TMDB zagrevanje nije uspelo, nije kritično - prvi pravi zahtev će pokušati ponovo: ${e.message}")
+        }
+    }
+}
 
 
 fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
