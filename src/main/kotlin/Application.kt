@@ -68,7 +68,26 @@ fun Application.module() {
     }
 
     install(CORS) {
-        anyHost() // Po potrebi suziti na dozvoljene hostove/origine
+        // ALLOWED_ORIGINS: opciona ENV promenljiva, comma-separated lista dozvoljenih origina
+        // (npr. "https://app.movielens.rs,https://admin.movielens.rs"). Ako nije postavljena,
+        // ostajemo na anyHost() radi lakšeg lokalnog/mobilnog development-a (Android klijent nema
+        // fiksan origin). Kad se zna produkcioni domen frontenda, postaviti ALLOWED_ORIGINS.
+        val allowedOrigins = System.getenv("ALLOWED_ORIGINS")
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+
+        if (allowedOrigins.isEmpty()) {
+            anyHost()
+        } else {
+            allowedOrigins.forEach { origin ->
+                val url = Url(origin)
+                val hostAndPort = if (url.port == url.protocol.defaultPort) url.host else "${url.host}:${url.port}"
+                allowHost(hostAndPort, schemes = listOf(url.protocol.name))
+            }
+        }
+
         allowNonSimpleContentTypes = true
         allowMethod(HttpMethod.Post)
         allowMethod(HttpMethod.Get)

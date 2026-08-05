@@ -2,7 +2,9 @@ package com.milinko.db
 
 import kotlinx.coroutines.Dispatchers
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import org.jetbrains.exposed.sql.transactions.transaction
 
 object DatabaseFactory {
     fun init() {
@@ -34,6 +36,14 @@ object DatabaseFactory {
             password = password
         )
         println("[DATABASE] Uspešno uspostavljena veza sa Supabase PostgreSQL bazom!")
+
+        // Šema se generiše direktno iz Exposed tabela (UsersTable, ScrapedMoviesTable) — jedan
+        // izvor istine u kodu, bez ručnog SQL-a koji vremenom ode iz sinhronizacije sa kodom.
+        // createMissingTablesAndColumns je idempotentan: kreira ono što nedostaje, ne dira postojeće.
+        transaction {
+            SchemaUtils.createMissingTablesAndColumns(UsersTable, ScrapedMoviesTable)
+        }
+        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)

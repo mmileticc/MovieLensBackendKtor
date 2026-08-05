@@ -33,8 +33,6 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-core:$jacksonVersion")
     implementation("com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:$jacksonVersion")
-    implementation("com.fasterxml.jackson.core:jackson-databind:$jacksonVersion")
-    implementation("com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion")
 
     implementation("com.squareup.okio:okio:3.9.0")
 
@@ -59,8 +57,6 @@ dependencies {
     //scraping biblioteke
     implementation("com.microsoft.playwright:playwright:1.42.0")
     implementation("org.jsoup:jsoup:1.17.2")
-    implementation("com.microsoft.playwright:playwright:1.42.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
 
     implementation("org.jetbrains.exposed:exposed-core:0.41.1")
     implementation("org.jetbrains.exposed:exposed-dao:0.41.1")

@@ -1,3 +1,6 @@
+// DEPRECATED / NEKORIŠĆENO: sekvencijalna verzija engine-a, zamenjena sa ScrapingEngineConcurrent
+// (koji se koristi u Application.kt/configureScrapingLifecycle i MainConcurrent.kt). Ostavljeno
+// samo zato što nije bilo moguće obrisati fajl u ovoj sesiji — bezbedno za ručno brisanje.
 package scraping
 
 
@@ -5,6 +8,7 @@ import com.milinko.scraping.model.ScrapedMovie
 import com.milinko.scraping.scraper.CinemaScraper
 import java.time.LocalDate
 
+@Deprecated("Zamenjeno sa ScrapingEngineConcurrent. Ne koristi se u produkciji.")
 class ScrapingEngine(private val scrapers: List<CinemaScraper>) {
 
     fun runAllScrapers(date: LocalDate = LocalDate.now()): List<ScrapedMovie> {

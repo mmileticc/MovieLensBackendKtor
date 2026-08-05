@@ -145,22 +145,14 @@ Treba postaviti tabele ako već nisu kreirane.
 3. Database password spremi negde bezbedno!
 
 ### 4.2 Kreiraj tabele
-U Supabase SQL editor, pokreni ovaj SQL (ili prilagodi prema tvom DatabaseFactory):
+Ručni SQL više NIJE potreban. `DatabaseFactory.init()` poziva `SchemaUtils.createMissingTablesAndColumns(...)`
+pri svakom startu aplikacije i kreira/ažurira tabele (`users`, `scraped_movies`) direktno prema
+Exposed definicijama iz koda (`UsersTable.kt`, `ScrapedMoviesTable.kt`). To je jedini izvor istine za
+šemu — ne održavaj SQL ovde ručno jer će vremenom otići iz sinhronizacije sa kodom (što se i desilo
+sa starijom verzijom ovog dokumenta).
 
-```sql
-CREATE TABLE IF NOT EXISTS scraped_movies (
-    id SERIAL PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    original_title VARCHAR(255),
-    cinema VARCHAR(100),
-    showtime VARCHAR(100),
-    date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    scrape_date DATE NOT NULL
-);
-
-CREATE INDEX idx_scrape_date ON scraped_movies(scrape_date);
-CREATE INDEX idx_cinema ON scraped_movies(cinema);
-```
+Dovoljno je da napraviš prazan Supabase projekat i podesiš env promenljive (Korak 4.1 i 4.3) — tabele
+se pojavljuju automatski nakon prvog uspešnog starta servisa.
 
 ---
 

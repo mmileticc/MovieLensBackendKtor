@@ -1,3 +1,7 @@
+// DEPRECATED / NEKORIŠĆENO: zamenjeno sa MainConcurrent.kt + ScrapingEngineConcurrent.
+// Ovaj fajl koristi stari sekvencijalni ScrapingEngine i nije referenciran nigde u produkcionom
+// kodu (Application.kt koristi isključivo ScrapingEngineConcurrent). Bezbedno za ručno brisanje
+// zajedno sa ScrapingEngine.kt kad se potvrdi da nije potreban.
 package com.milinko.scraping
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
@@ -7,6 +11,7 @@ import scraping.ScrapingEngine
 
 import java.time.LocalDate
 
+@Deprecated("Zamenjeno sa MainConcurrent.kt / ScrapingEngineConcurrent. Ne koristi se u produkciji.")
 fun main() {
     System.setOut(java.io.PrintStream(System.out, true, "UTF-8"))
     System.setErr(java.io.PrintStream(System.err, true, "UTF-8"))
