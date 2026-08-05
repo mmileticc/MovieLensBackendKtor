@@ -50,6 +50,7 @@ dependencies {
     implementation("io.ktor:ktor-client-content-negotiation-jvm")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     implementation("io.ktor:ktor-server-config-yaml-jvm")
+    implementation("com.charleskorn.kaml:kaml:0.55.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation("io.ktor:ktor-server-test-host-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
