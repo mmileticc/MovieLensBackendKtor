@@ -4,7 +4,9 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
+import com.milinko.db.MoviesRepository
 import com.milinko.db.ScrapedMoviesRepository
+import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
@@ -26,6 +28,7 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import com.milinko.util.CINEMA_ZONE_ID
 import scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
 
@@ -151,6 +154,7 @@ fun Application.module() {
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
     configureMovieRouting(tmdbService)
+    configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository())
 }
 
 @kotlinx.serialization.Serializable
@@ -183,7 +187,11 @@ fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
         try {
             println("[REPREZENTACIJA] Provera stanja i svežine baze podataka...")
 
-            val danasnjiDatum = LocalDate.now()
+            // VAŽNO: eksplicitno CINEMA_ZONE_ID (Europe/Belgrade), ne LocalDate.now() (JVM lokalna
+            // zona - može biti UTC na Render-u, Belgrade lokalno itd.) i ne UTC (dan bi se "prevrnuo"
+            // 1-2h kasnije nego što je stvarno ponoć u Beogradu). getLatestScrapeDate() konvertuje
+            // UTC-stored created_at u istu zonu pre poređenja - videti komentar tamo.
+            val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
             val datumPoslednjegSkrapovanja = repository.getLatestScrapeDate()
 
             // GLAVNA PROMENA: Pokrećemo ako je baza prazna ILI ako podaci nisu od danas

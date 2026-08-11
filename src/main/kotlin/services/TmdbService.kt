@@ -167,6 +167,7 @@ class TmdbService(private val apiKey: String) {
             backdropPath = dto.backdropPath,
             overview = dto.overview,
             voteAverage = dto.voteAverage,
+            popularity = dto.popularity,
             runtime = dto.runtime,
             genres = dto.genres.map { TmdbGenre(it.id, it.name) },
             cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) }
@@ -235,6 +236,7 @@ private data class TmdbMovieDetailDto(
     @SerialName("backdrop_path") val backdropPath: String? = null,
     val overview: String? = null,
     @SerialName("vote_average") val voteAverage: Double? = null,
+    val popularity: Double? = null,
     val runtime: Int? = null,
     val genres: List<TmdbGenreDto> = emptyList(),
     val credits: TmdbCreditsDto? = null
@@ -262,6 +264,7 @@ data class TmdbMovieDetail(
     val backdropPath: String?,
     val overview: String?,
     val voteAverage: Double?,
+    val popularity: Double? = null,
     val runtime: Int?,
     val genres: List<TmdbGenre>,
     val cast: List<TmdbCastMember>

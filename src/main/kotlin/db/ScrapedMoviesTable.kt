@@ -3,7 +3,12 @@ package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
 import com.milinko.scraping.model.ScrapedMovie
-import kotlinx.datetime.toJavaLocalDateTime
+import com.milinko.util.CINEMA_TIME_ZONE
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toJavaLocalDate
+import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.insert
@@ -23,7 +28,10 @@ object ScrapedMoviesTable : Table("scraped_movies") {
     val isUpcoming = bool("is_upcoming").default(false)
 
     val tmdbId = integer("tmdb_id").nullable()
-    val createdAt = datetime("created_at")
+    // Eksplicitan UTC default u Kotlinu (umesto oslanjanja na podrazumevanu vrednost kolone u
+    // Postgres-u koja nije vidljiva ovde) - dosledno svim ostalim *Table.kt fajlovima. Poređenje
+    // datuma u Application.kt (configureScrapingLifecycle) pretpostavlja da je ovo UTC.
+    val createdAt = datetime("created_at").clientDefault { Clock.System.now().toLocalDateTime(TimeZone.UTC) }
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -57,9 +65,12 @@ class ScrapedMoviesRepository {
     suspend fun getLatestScrapeDate(): java.time.LocalDate? = dbQuery {
         val firstRow = ScrapedMoviesTable.selectAll().limit(1).singleOrNull()
         if (firstRow != null) {
+            // createdAt je sačuvan kao UTC wall-clock (clientDefault iznad). Prvo ga tumačimo kao
+            // UTC Instant, pa ga prevodimo u beogradski kalendarski dan - ne uzimamo datumski deo
+            // direktno iz UTC vrednosti (to je bio uzrok bug-a: dan bi se "prevrnuo" 1-2h kasnije
+            // nego što je stvarno ponoć u Beogradu, pa bi se skrejpovanje ponovo pokretalo).
             val kotlinxDateTime = firstRow[ScrapedMoviesTable.createdAt]
-            // Pretvaramo kotlinx.datetime u standardni java.time.LocalDate
-            kotlinxDateTime.toJavaLocalDateTime().toLocalDate()
+            kotlinxDateTime.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
         } else {
             null
         }
