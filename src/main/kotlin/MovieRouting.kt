@@ -1,9 +1,14 @@
 package com.milinko
 
+import com.milinko.db.FriendshipsRepository
+import com.milinko.db.UserActionsRepository
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.principal
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.SerialName
@@ -68,7 +73,23 @@ private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
     overview = overview
 )
 
-fun Application.configureMovieRouting(tmdbService: TmdbService) {
+// "Prijatelji su gledali ovaj film" bedž na Movie Detail-u - namerno posebna, JWT-zaštićena ruta
+// izvan /api/movies bloka ispod (koji ostaje javan/bez logina), jer zavisi od toga ko pita.
+@Serializable
+data class FriendWatchedDto(
+    @SerialName("friend_id") val friendId: String,
+    @SerialName("friend_name") val friendName: String,
+    val rating: Int? = null
+)
+
+@Serializable
+data class FriendsWatchedResponseDto(val friends: List<FriendWatchedDto>)
+
+fun Application.configureMovieRouting(
+    tmdbService: TmdbService,
+    friendshipsRepository: FriendshipsRepository,
+    userActionsRepository: UserActionsRepository
+) {
     routing {
         route("/api/movies") {
             get("/search") {
@@ -132,6 +153,23 @@ fun Application.configureMovieRouting(tmdbService: TmdbService) {
                     println("[ERROR] /api/movies/$tmdbId: ${e.message}")
                     call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB detalji nisu uspeli"))
                 }
+            }
+        }
+
+        authenticate("auth-jwt") {
+            get("/api/movies/{tmdbId}/friends-watched") {
+                val callerId = call.principal<JWTPrincipal>()?.payload?.subject
+                    ?: return@get call.respond(HttpStatusCode.Unauthorized)
+                val tmdbId = call.parameters["tmdbId"]?.toLongOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
+
+                val friendIds = friendshipsRepository.getFriendIds(callerId)
+                val watched = userActionsRepository.getFriendsWhoWatched(friendIds, tmdbId)
+                call.respond(
+                    FriendsWatchedResponseDto(
+                        watched.map { FriendWatchedDto(it.friendId, it.friendUsername ?: "Korisnik", it.rating) }
+                    )
+                )
             }
         }
     }

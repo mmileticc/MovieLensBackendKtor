@@ -32,6 +32,12 @@ data class FriendActivityRow(
     val createdAt: LocalDateTime?
 )
 
+data class FriendWatchedRow(
+    val friendId: String,
+    val friendUsername: String?,
+    val rating: Int?
+)
+
 /**
  * DAO za watchlist + "odgledano"/ocena (Faza 2, MOVIELENS_ROADMAP.md). Obe funkcionalnosti dele
  * istu `user_actions` tabelu, razdvojene preko `action_type`.
@@ -175,6 +181,31 @@ class UserActionsRepository {
                         posterPath = row[MoviesTable.posterUrl],
                         rating = row[UserActionsTable.rating],
                         createdAt = row[UserActionsTable.createdAt]
+                    )
+                }
+        }
+    }
+
+    /**
+     * Za Movie Detail "prijatelji su gledali" bedž - od datog spiska friendIds, koji su WATCHED-
+     * ovali baš ovaj tmdbId (i sa kojom ocenom, ako postoji). Nema JOIN na MoviesTable jer nam
+     * ovde ne treba title/poster (već su na klijentu, gleda se taj isti film).
+     */
+    suspend fun getFriendsWhoWatched(friendIds: List<String>, tmdbId: Long): List<FriendWatchedRow> {
+        if (friendIds.isEmpty()) return emptyList()
+        return dbQuery {
+            UserActionsTable
+                .join(UsersTable, JoinType.INNER, additionalConstraint = { UserActionsTable.userId eq UsersTable.id })
+                .select {
+                    (UserActionsTable.userId inList friendIds) and
+                        (UserActionsTable.movieId eq tmdbId) and
+                        (UserActionsTable.actionType eq ACTION_WATCHED)
+                }
+                .map { row ->
+                    FriendWatchedRow(
+                        friendId = row[UserActionsTable.userId],
+                        friendUsername = row[UsersTable.username],
+                        rating = row[UserActionsTable.rating]
                     )
                 }
         }
