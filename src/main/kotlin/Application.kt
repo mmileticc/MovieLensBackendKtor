@@ -4,6 +4,7 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
+import com.milinko.db.FriendshipsRepository
 import com.milinko.db.MoviesRepository
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.UserActionsRepository
@@ -155,6 +156,7 @@ fun Application.module() {
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
     configureMovieRouting(tmdbService)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository())
+    configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository())
 }
 
 @kotlinx.serialization.Serializable

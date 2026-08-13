@@ -6,8 +6,11 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
+import org.jetbrains.exposed.sql.lowerCase
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.update
 import java.util.*
@@ -171,6 +174,38 @@ class UserDao {
                 )
             }
             .firstOrNull()
+    }
+
+    /**
+     * Pretraga korisnika za dodavanje prijatelja - delimično podudaranje (case-insensitive) po
+     * username-u ILI email-u, isključuje samog sebe. Koristi se za "search-as-you-type" na
+     * Android strani (isti obrazac kao pretraga filmova).
+     */
+    suspend fun searchUsers(query: String, excludeUserId: String, limit: Int = 20): List<User> = dbQuery {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return@dbQuery emptyList()
+
+        val pattern = "%${trimmed.lowercase()}%"
+        UsersTable.select {
+            (UsersTable.id neq excludeUserId) and
+                (
+                    (UsersTable.username.lowerCase() like pattern) or
+                        (UsersTable.email.lowerCase() like pattern)
+                )
+        }.limit(limit).map { row ->
+            User(
+                id = row[UsersTable.id],
+                firebaseUid = row[UsersTable.firebaseUid],
+                username = row[UsersTable.username],
+                email = row[UsersTable.email],
+                avatarUrl = row[UsersTable.avatarUrl],
+                bio = row[UsersTable.bio],
+                subscriptionTier = row[UsersTable.subscriptionTier],
+                roles = row[UsersTable.roles],
+                createdAt = row[UsersTable.createdAt],
+                lastLogin = row[UsersTable.lastLogin]
+            )
+        }
     }
 }
 

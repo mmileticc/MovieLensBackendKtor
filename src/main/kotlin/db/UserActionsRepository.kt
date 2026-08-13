@@ -3,6 +3,7 @@ package com.milinko.db
 import com.milinko.db.DatabaseFactory.dbQuery
 import kotlinx.datetime.LocalDateTime
 import org.jetbrains.exposed.sql.JoinType
+import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
@@ -14,6 +15,16 @@ private const val ACTION_WATCHLIST = "WATCHLIST"
 private const val ACTION_WATCHED = "WATCHED"
 
 data class UserActionMovieRow(
+    val tmdbId: Long,
+    val title: String,
+    val posterPath: String?,
+    val rating: Int?,
+    val createdAt: LocalDateTime?
+)
+
+data class FriendActivityRow(
+    val friendId: String,
+    val friendUsername: String?,
     val tmdbId: Long,
     val title: String,
     val posterPath: String?,
@@ -135,6 +146,37 @@ class UserActionsRepository {
             (UserActionsTable.userId eq userId) and
                 (UserActionsTable.movieId eq tmdbId) and
                 (UserActionsTable.actionType eq ACTION_WATCHED)
+        }
+    }
+
+    /**
+     * Friend activity feed - SAMO "odgledano"/ocene (ACTION_WATCHED), namerno bez watchlist-e.
+     * Dogovoreno u MOVIELENS_ROADMAP.md: watchlist ("planiram da gledam") ostaje privatan, deli se
+     * samo ono što je korisnik stvarno odgledao/ocenio - kao Letterboxd. Ako je friendIds prazna
+     * lista, vraća praznu listu (nema poziva ka bazi bez WHERE IN uslova).
+     */
+    suspend fun getFriendsActivity(friendIds: List<String>, limit: Int = 50): List<FriendActivityRow> {
+        if (friendIds.isEmpty()) return emptyList()
+        return dbQuery {
+            UserActionsTable
+                .join(MoviesTable, JoinType.INNER, additionalConstraint = { UserActionsTable.movieId eq MoviesTable.tmdbId })
+                .join(UsersTable, JoinType.INNER, additionalConstraint = { UserActionsTable.userId eq UsersTable.id })
+                .select {
+                    (UserActionsTable.userId inList friendIds) and (UserActionsTable.actionType eq ACTION_WATCHED)
+                }
+                .orderBy(UserActionsTable.createdAt, SortOrder.DESC)
+                .limit(limit)
+                .map { row ->
+                    FriendActivityRow(
+                        friendId = row[UserActionsTable.userId],
+                        friendUsername = row[UsersTable.username],
+                        tmdbId = row[MoviesTable.tmdbId],
+                        title = row[MoviesTable.title],
+                        posterPath = row[MoviesTable.posterUrl],
+                        rating = row[UserActionsTable.rating],
+                        createdAt = row[UserActionsTable.createdAt]
+                    )
+                }
         }
     }
 }
