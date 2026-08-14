@@ -7,6 +7,7 @@ import com.milinko.db.FirebaseAdminInitializer
 import com.milinko.db.FriendshipsRepository
 import com.milinko.db.MoviesRepository
 import com.milinko.db.ScrapedMoviesRepository
+import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
 import com.milinko.scraping.scraper.ArenaCineplexScraper
@@ -154,9 +155,9 @@ fun Application.module() {
         configureScrapingLifecycle(tmdbService)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
-    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository())
-    configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository())
-    configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository())
+    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository())
+    configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository())
+    configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
 }
 
 @kotlinx.serialization.Serializable

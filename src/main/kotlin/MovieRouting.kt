@@ -1,6 +1,7 @@
 package com.milinko
 
 import com.milinko.db.FriendshipsRepository
+import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
@@ -88,7 +89,8 @@ data class FriendsWatchedResponseDto(val friends: List<FriendWatchedDto>)
 fun Application.configureMovieRouting(
     tmdbService: TmdbService,
     friendshipsRepository: FriendshipsRepository,
-    userActionsRepository: UserActionsRepository
+    userActionsRepository: UserActionsRepository,
+    tasteProfileRepository: TasteProfileRepository
 ) {
     routing {
         route("/api/movies") {
@@ -118,9 +120,28 @@ fun Application.configureMovieRouting(
             }
 
             get("/featured") {
-                // Za sada isto što i trending, dok ne postoji personalizacija (Faza 4 - profilisanje)
+                // Faza 4 (MOVIELENS_ROADMAP.md): ako je userId prosleđen i korisnik ima dovoljno
+                // ocenjenih filmova da postoji taste profile, vraćamo TMDB discover po njegova 3
+                // najomiljenija žanra (po prosečnoj oceni) umesto generičkih popularnih filmova.
+                // Bez userId-a, praznog profila (nov korisnik), ili ako discover ne vrati ništa -
+                // tih fallback na popularne, isto ponašanje kao ranije (nikad prazan ekran).
+                val userId = call.request.queryParameters["userId"]?.trim()?.takeIf { it.isNotBlank() }
                 try {
-                    val results = tmdbService.getPopularMovies(1)
+                    val personalized = userId?.let { uid ->
+                        val topGenreIds = tasteProfileRepository.getTasteProfile(uid).take(3).map { it.genreId }
+                        if (topGenreIds.isEmpty()) {
+                            null
+                        } else {
+                            // Filmovi koje je korisnik već odgledao/ocenio su upravo ono što je
+                            // gurnulo ovaj žanr na vrh profila - bez ovog filtera bi se stalno
+                            // vraćali kao "predlog" isti filmovi koje je korisnik već video.
+                            val alreadyWatched = userActionsRepository.getHistory(uid).map { it.tmdbId }.toSet()
+                            tmdbService.getMoviesByGenres(topGenreIds)
+                                .filter { it.id != null && it.id.toLong() !in alreadyWatched }
+                                .takeIf { it.isNotEmpty() }
+                        }
+                    }
+                    val results = personalized ?: tmdbService.getPopularMovies(1)
                     call.respond(MovieListResponseDto(results.map { it.toDto() }))
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/featured: ${e.message}")

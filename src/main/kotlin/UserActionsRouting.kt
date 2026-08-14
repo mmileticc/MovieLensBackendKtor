@@ -1,6 +1,7 @@
 package com.milinko
 
 import com.milinko.db.MoviesRepository
+import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionMovieRow
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.TmdbService
@@ -64,6 +65,18 @@ data class AddToHistoryRequest(val tmdbId: Int, val rating: Double? = null, val 
 @Serializable
 data class UpdateHistoryRequest(val rating: Double)
 
+// Taste profile (Faza 4) - prosečna ocena po žanru, izvedeno direktno iz ocena bez "crne kutije".
+@Serializable
+data class GenreAffinityDto(
+    @SerialName("genre_id") val genreId: Int,
+    val genre: String,
+    @SerialName("average_rating") val averageRating: Double,
+    @SerialName("movie_count") val movieCount: Int
+)
+
+@Serializable
+data class TasteProfileResponseDto(val genres: List<GenreAffinityDto>)
+
 private fun LocalDateTime?.toEpochMillisOrNow(): Long {
     val localDateTime = this ?: Clock.System.now().toLocalDateTime(TimeZone.UTC)
     return localDateTime.toInstant(TimeZone.UTC).toEpochMilliseconds()
@@ -93,7 +106,8 @@ private fun Double?.toRatingIntOrNull(): Int? {
 fun Application.configureUserActionsRouting(
     tmdbService: TmdbService,
     userActionsRepository: UserActionsRepository,
-    moviesRepository: MoviesRepository
+    moviesRepository: MoviesRepository,
+    tasteProfileRepository: TasteProfileRepository
 ) {
     routing {
         authenticate("auth-jwt") {
@@ -193,6 +207,19 @@ fun Application.configureUserActionsRouting(
                         userActionsRepository.removeFromHistory(userId, tmdbId)
                         call.respond(HttpStatusCode.NoContent)
                     }
+                }
+
+                // Faza 4 - prosečna ocena po žanru, izvedeno iz WATCHED+rated filmova. Samo za
+                // sebe za sada (ownerUserIdOrNull) - poređenje sa prijateljem dolazi kasnije.
+                get("/taste-profile") {
+                    val userId = call.ownerUserIdOrNull()
+                        ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovom profilu"))
+                    val profile = tasteProfileRepository.getTasteProfile(userId)
+                    call.respond(
+                        TasteProfileResponseDto(
+                            profile.map { GenreAffinityDto(it.genreId, it.genreName, it.averageRating, it.movieCount) }
+                        )
+                    )
                 }
             }
         }

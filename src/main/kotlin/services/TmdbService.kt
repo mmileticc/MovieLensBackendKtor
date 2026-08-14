@@ -33,6 +33,7 @@ class TmdbService(private val apiKey: String) {
     private val searchCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 10 * 60 * 1000)
     private val detailCache = TtlCache<Int, TmdbMovieDetail>(ttlMillis = 60 * 60 * 1000)
     private val popularCache = TtlCache<Int, List<TmdbMovieMatch>>(ttlMillis = 2 * 60 * 60 * 1000)
+    private val discoverCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 60 * 60 * 1000)
 
     private val client = HttpClient(CIO) {
         install(ContentEncoding) {
@@ -207,6 +208,48 @@ class TmdbService(private val apiKey: String) {
         popularCache.put(page, result)
         return result
     }
+
+    /**
+     * TMDB "discover" po žanrovima - koristi se za personalizovan /api/movies/featured (Faza 4,
+     * MOVIELENS_ROADMAP.md). `genreIds` se šalje TMDB-u zarezom-razdvojeno, što TMDB tumači kao
+     * OR (bilo koji od navedenih žanrova) - namerno, ne AND (pipe "|"), jer bismo inače lako dobili
+     * prazne rezultate za korisnika sa raznovrsnim ukusom.
+     */
+    suspend fun getMoviesByGenres(genreIds: List<Int>, page: Int = 1): List<TmdbMovieMatch> {
+        if (genreIds.isEmpty()) return emptyList()
+        val cacheKey = "${genreIds.sorted().joinToString(",")}|$page"
+        discoverCache.get(cacheKey)?.let { return it }
+
+        val url = URLBuilder("https://api.themoviedb.org/3/discover/movie").apply {
+            parameters.append("with_genres", genreIds.joinToString(","))
+            parameters.append("sort_by", "popularity.desc")
+            parameters.append("language", "en-US")
+            parameters.append("page", page.toString())
+            parameters.append("include_adult", "false")
+            if (!useV4Bearer) parameters.append("api_key", apiKey)
+        }.build()
+
+        val response: HttpResponse = getWithRetry(url)
+        if (!response.status.isSuccess()) {
+            val bodyText = try { response.bodyAsText() } catch (_: Throwable) { "" }
+            throw IllegalStateException("TMDB discover error: HTTP ${response.status.value}. ${unauthorizedHint(response.status)} Body=${bodyText.take(300)}")
+        }
+        val body: TmdbSearchResponse = response.body()
+        val result = body.results.map { r ->
+            TmdbMovieMatch(
+                id = r.id,
+                title = r.title ?: r.originalTitle ?: "",
+                originalTitle = r.originalTitle,
+                releaseDate = r.releaseDate,
+                overview = r.overview,
+                posterPath = r.posterPath,
+                popularity = r.popularity,
+                voteAverage = r.voteAverage
+            )
+        }
+        discoverCache.put(cacheKey, result)
+        return result
+    }
 }
 
 @Serializable
@@ -270,6 +313,9 @@ data class TmdbMovieDetail(
     val cast: List<TmdbCastMember>
 )
 
+// @Serializable (ne samo data class) - genres se čuvaju kao JSON string u movies.genres koloni
+// (Faza 4, MOVIELENS_ROADMAP.md - taste profile po žanru), videti MoviesRepository.ensureCached.
+@Serializable
 data class TmdbGenre(val id: Int, val name: String)
 
 data class TmdbCastMember(
