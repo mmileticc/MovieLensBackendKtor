@@ -6,15 +6,14 @@ import com.microsoft.playwright.BrowserType
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.options.LoadState
-import com.microsoft.playwright.options.WaitForSelectorState
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.locations.LokacijeBioskopa
 import com.milinko.scraping.model.ScrapedMovie
+import com.milinko.scraping.util.dumpScraperDebugArtifacts
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 data class CineGrandDeepDetails(
     val originalTitle: String?,
@@ -31,70 +30,79 @@ class CineGrandScraper : CinemaScraper {
         val tekuciFilmovi = mutableListOf<ScrapedMovie>()
         val upcomingFilmovi = mutableListOf<ScrapedMovie>()
 
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-        val formatiranDatum = date.format(formatter)
-
-        val urlRepertoar = "$baseUrl/repertoar?date=$formatiranDatum"
+        // Sajt je u međuvremenu potpuno redizajniran (stari: Angular, "/repertoar?date=..." +
+        // "a.event-card"; novi: Nuxt, "/u-bioskopu" + "/uskoro" + "a.group.block") - otkriveno
+        // avgusta 2026. preko scraper-debug/ snimaka pošto je stari URL vraćao 404. Novi
+        // "/u-bioskopu" ne prima date parametar (probano uživo, nije bitno za našu svrhu - ne
+        // čuvamo tačne termine, samo koji film igra u kom bioskopu).
+        val urlRepertoar = "$baseUrl/u-bioskopu"
+        val urlUskoro = "$baseUrl/uskoro"
 
         println("[$cinemaName] Inicijalizacija Playwright drajvera...")
 
         Playwright.create().use { localPlaywright ->
-            val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
-            val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
-            val page = context.newPage()
+            // Ceo setup (launch/newContext/newPage) je sad obavijen svojim try/catch-om - ranije
+            // nije bio, pa bi npr. neuspešan browser.launch() (retko, ali moguće - iscrpljeni
+            // resursi, oštećena Chromium instalacija) bacio izuzetak koji se ovde ničim nije
+            // hvatao. Sa izolacijom na nivou ScrapingEngineConcurrent to više ne bi oborilo OSTALE
+            // scrapere, ali je i dalje korisno imati jasnu, prepoznatljivu poruku ovde - razlikuje
+            // "browser se uopšte nije pokrenuo" od "browser je radio, ali stranica/selektor nisu".
+            try {
+                val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
+                val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
+                val page = context.newPage()
 
-            page.setExtraHTTPHeaders(mapOf("User-Agent" to MOVIE_LENS_USER_AGENT))
+                page.setExtraHTTPHeaders(mapOf("User-Agent" to MOVIE_LENS_USER_AGENT))
 
-            page.route("**/*") { route ->
-                val resourceType = route.request().resourceType()
-                if (resourceType == "image" || resourceType == "font" || resourceType == "media") {
-                    route.abort()
-                } else {
-                    route.resume()
+                page.route("**/*") { route ->
+                    val resourceType = route.request().resourceType()
+                    if (resourceType == "image" || resourceType == "font" || resourceType == "media") {
+                        route.abort()
+                    } else {
+                        route.resume()
+                    }
                 }
-            }
 
-            // 1. SKRAPOVANJE TEKUĆEG REPERTOARA
-            try {
-                println("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
-                page.navigate(urlRepertoar)
-                page.waitForSelector("a.event-card", Page.WaitForSelectorOptions().setTimeout(15000.0))
+                // 1. SKRAPOVANJE TEKUĆEG REPERTOARA (/u-bioskopu)
+                try {
+                    println("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
+                    page.navigate(urlRepertoar)
+                    page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
-                val docRepertoar = Jsoup.parse(page.content())
-                tekuciFilmovi.addAll(
-                    parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = emptySet())
-                )
+                    val docRepertoar = Jsoup.parse(page.content())
+                    tekuciFilmovi.addAll(
+                        parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, vecSkrapovaniLinkovi = emptySet())
+                    )
+                } catch (e: Exception) {
+                    println("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
+                    // Snimamo tačno šta je browser video u trenutku pada - bez ovoga se sledeći put
+                    // opet ne bi znalo da li je selektor promenjen, sajt blokirao bota, ili nešto treće.
+                    dumpScraperDebugArtifacts(page, cinemaName, "repertoar")
+                }
+
+                val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
+
+                // 2. SKRAPOVANJE SEKCIJE "USKORO" (/uskoro) - novi sajt ima punu, direktno
+                // navigabilnu rutu za ovo (stari Angular sajt je zahtevao simulaciju klika na
+                // navbar da bi SPA komponenta promenila prikaz - to više nije potrebno).
+                try {
+                    println("[$cinemaName] [USKORO] Otvaram stranicu: $urlUskoro")
+                    page.navigate(urlUskoro)
+                    page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
+
+                    val docUskoro = Jsoup.parse(page.content())
+                    upcomingFilmovi.addAll(
+                        parseMoviesFromDoc(context, docUskoro, isUpcoming = true, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi)
+                    )
+                } catch (e: Exception) {
+                    println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+                    dumpScraperDebugArtifacts(page, cinemaName, "uskoro")
+                } finally {
+                    context.close()
+                    browser.close()
+                }
             } catch (e: Exception) {
-                println("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
-            }
-
-            val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
-
-            // 2. SKRAPOVANJE SEKCIJE "USKORO" PREKO KLIKA NA NAVBAR
-            try {
-                println("[$cinemaName] [USKORO] Navigiram na početnu stranu radi klika na 'Uskoro'...")
-                page.navigate(baseUrl)
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED)
-
-                // Pronalaženje i klik na "Uskoro" u glavnom meniju (bazirano na slici image_e15ae1.jpg)
-                val uskoroDugme = "a.text-desktop-main-menu:has-text('Uskoro')"
-                page.waitForSelector(uskoroDugme, Page.WaitForSelectorOptions().setTimeout(10000.0))
-                println("[$cinemaName] [USKORO] Klikćem na dugme 'Uskoro' u navigaciji...")
-                page.click(uskoroDugme)
-
-                // Sačekamo kratko da Angular zameni komponente i učita nove kartice filmova
-                page.waitForTimeout(3000.0)
-                page.waitForSelector("a.event-card", Page.WaitForSelectorOptions().setTimeout(10000.0))
-
-                val docUskoro = Jsoup.parse(page.content())
-                upcomingFilmovi.addAll(
-                    parseMoviesFromDoc(context, docUskoro, isUpcoming = true, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi)
-                )
-            } catch (e: Exception) {
-                println("[$cinemaName] Greška pri simulaciji klika za sekciju Uskoro: ${e.message}")
-            } finally {
-                context.close()
-                browser.close()
+                println("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
             }
         }
 
@@ -124,20 +132,20 @@ class CineGrandScraper : CinemaScraper {
         context: BrowserContext,
         doc: Document,
         isUpcoming: Boolean,
-        formatiranDatum: String,
         vecSkrapovaniLinkovi: Set<String>
     ): List<ScrapedMovie> {
         val result = mutableListOf<ScrapedMovie>()
-        val filmovi = doc.select("a.event-card")
+        // Kartica filma na novom sajtu: <a href="/happenings/<slug>" class="group block">
+        // ...<h3>Naslov</h3></a> - "group"/"block" su Tailwind utility klase (hover efekat +
+        // layout), ne semantičko ime, ali su dosledne na obe liste (/u-bioskopu i /uskoro).
+        val filmovi = doc.select("a.group.block")
         val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
 
         println("[$cinemaName] [$tipLoga] Pronađeno filmova na stranici: ${filmovi.size}")
 
         for (film in filmovi) {
             var linkFilma = film.attr("href").trim()
-            val naslov = film.select("div.event-title.d-md-block").first()?.text()?.trim()
-                ?: film.select("div.event-title").first()?.text()?.trim()
-                ?: ""
+            val naslov = film.select("h3").first()?.text()?.trim() ?: ""
 
             if (linkFilma.startsWith("/")) {
                 linkFilma = baseUrl + linkFilma
@@ -215,28 +223,32 @@ class CineGrandScraper : CinemaScraper {
                 privremenaStranica.navigate(urlFilma)
                 privremenaStranica.waitForLoadState(LoadState.DOMCONTENTLOADED)
 
-                // REŠENJE ZA PROBLEM LOKACIJA:
-                // 1. Prvo čekamo da se sigurno pojavi naslov (to nam govori da se stranica otvorila)
-                privremenaStranica.waitForSelector("span.hero-title-original", Page.WaitForSelectorOptions().setTimeout(10000.0))
+                // REŠENJE ZA PROBLEM LOKACIJA (novi Nuxt sajt):
+                // 1. Prvo čekamo da se sigurno pojavi originalni naslov (".hf-original" - deo
+                // glavnog "hero" bloka na vrhu stranice filma, prisutan i za tekuće i za najavljene
+                // filmove) - to nam govori da se stranica stvarno otvorila.
+                privremenaStranica.waitForSelector(".hf-original", Page.WaitForSelectorOptions().setTimeout(10000.0))
 
-                // 2. Eksplicitno čekamo lokacije (h5.location-title). Dajemo Angularu 3.5 sekunde da povuče podatke sa API-ja.
-                // Koristimo try-catch jer "Uskoro" filmovi nemaju lokacije, pa ne želimo da srušimo skrapovanje ako baci TimeoutException.
+                // 2. Eksplicitno čekamo lokacije (".hp-raspon-cname") - postoje samo ako film ima
+                // bar jedan zakazan termin. Koristimo try-catch jer "Uskoro" filmovi bez zakazanog
+                // termina ih nemaju - ne želimo da srušimo skrapovanje ako baci TimeoutException.
                 try {
-                    privremenaStranica.waitForSelector("h5.location-title", Page.WaitForSelectorOptions().setTimeout(3500.0))
+                    privremenaStranica.waitForSelector(".hp-raspon-cname", Page.WaitForSelectorOptions().setTimeout(3500.0))
                 } catch (e: Exception) {
-                    // Ignorišemo - film je verovatno stvarno u sekciji "Uskoro" i nema termine ni lokacije
+                    // Ignorišemo - film verovatno stvarno nema zakazane termine još uvek
                 }
 
                 val doc = Jsoup.parse(privremenaStranica.content())
 
                 // Izvlačenje originalnog naslova
-                val originalniNaslovSpan = doc.select("span.hero-title-original").first()
-                if (originalniNaslovSpan != null) {
-                    originalniNaslov = originalniNaslovSpan.text().trim()
+                val originalniNaslovDiv = doc.select(".hf-original").first()
+                if (originalniNaslovDiv != null) {
+                    originalniNaslov = originalniNaslovDiv.text().trim()
                 }
 
-                // Izvlačenje svih lokacija u petlji (za svaku se pravi poseban objekat)
-                val bioskopiElementi = doc.select("div.location-grouped-projections div.location-section h5.location-title")
+                // Izvlačenje svih lokacija u petlji (za svaku se pravi poseban objekat) - svaki
+                // bioskop sa terminima je ".hp-raspon-cinema" blok sa ".hp-raspon-cname" naslovom.
+                val bioskopiElementi = doc.select(".hp-raspon-cname")
                 for (bioskop in bioskopiElementi) {
                     val imeBioskopa = bioskop.text().trim()
                     if (imeBioskopa.isNotEmpty() && !pronadjeneLokacije.contains(imeBioskopa)) {

@@ -9,8 +9,9 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toLocalDateTime
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.Table
-import org.jetbrains.exposed.sql.deleteAll
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 import org.jetbrains.exposed.sql.select
@@ -39,9 +40,23 @@ object ScrapedMoviesTable : Table("scraped_movies") {
 // 2. Klasa koja sadrži logiku za rad sa podacima
 class ScrapedMoviesRepository {
 
+    /**
+     * NAMERNO briše samo bioskope koji su STVARNO vratili nešto ovog ciklusa (per-bioskop zamena),
+     * ne celu tabelu (`deleteAll()`, kako je ranije bilo). Ako je jedan bioskop te noći vratio
+     * praznu listu (privremen pad sajta, timeout, promena strukture stranice...), njegovi stari
+     * (još uvek verovatno tačni, samo blago zastareli) redovi ostaju netaknuti umesto da nestanu -
+     * bez ovoga bi svaki prolazni hiccup jednog scrapera obrisao ceo repertoar tog bioskopa iz
+     * aplikacije dok se scraper ponovo ne uspe, umesto da se samo vidi jučerašnji repertoar.
+     */
     suspend fun insertScrapedMovies(moviesList: List<ScrapedMovie>) = dbQuery {
-        val obrisanoRedova = ScrapedMoviesTable.deleteAll()
-        println("[DATABASE] Obrisano starih zapisa iz baze: $obrisanoRedova")
+        val bioskopiZaZamenu = moviesList.map { it.cinemaName }.distinct()
+        if (bioskopiZaZamenu.isEmpty()) {
+            println("[DATABASE] Nijedan scraper nije vratio nijedan film ovog ciklusa - baza se ne dira, stari podaci ostaju.")
+            return@dbQuery
+        }
+
+        val obrisanoRedova = ScrapedMoviesTable.deleteWhere { ScrapedMoviesTable.cinemaName inList bioskopiZaZamenu }
+        println("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
 
         moviesList.forEach { movie ->
             ScrapedMoviesTable.insert { tableRow ->
@@ -56,7 +71,7 @@ class ScrapedMoviesRepository {
                 tableRow[tmdbId] = movie.tmdbId
             }
         }
-        println("[DATABASE] Skrapovani filmovi (${moviesList.size}) su uspešno sačuvani u Supabase!")
+        println("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
     }
 
     suspend fun isDatabaseEmpty(): Boolean = dbQuery {

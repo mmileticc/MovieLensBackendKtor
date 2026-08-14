@@ -19,8 +19,20 @@ class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
                 println("\n[Engine] Pokrećem paralelnu nit za: ${scraper.cinemaName}")
                 val startTimeScraper = System.currentTimeMillis()
 
-                // Izvršava se scraping za konkretan bioskop
-                val rezultati = scraper.scrape(date)
+                // VAŽNO (izolacija grešaka): svaki scraper.scrape() poziv je ovde obavijen sopstvenim
+                // try/catch-om. RANIJE ovo nije bio slučaj - pojedinačni scraperi imaju try/catch
+                // OKO svojih sekcija (repertoar/uskoro), ali ne i oko same inicijalizacije Playwright
+                // browsera (launch/newContext/newPage). Da je ijedan od tih poziva bacio izuzetak
+                // (npr. browser se ne pokrene, resurs se iscrpi), taj izuzetak bi propagirao kroz
+                // ovaj async blok i coroutineScope bi otkazao SVE ostale paralelne scrapere - jedan
+                // pokvaren bioskop bi tako mogao da obori celo noćno skrapovanje, ne samo sebe.
+                // Sad se svaka greška lokalizuje na svoj scraper, ostali nastavljaju normalno.
+                val rezultati = try {
+                    scraper.scrape(date)
+                } catch (e: Exception) {
+                    println("[Engine] KRITIČNA greška u scraperu ${scraper.cinemaName} - ostali scraperi nastavljaju normalno: ${e.message}")
+                    emptyList()
+                }
 
                 val duration = (System.currentTimeMillis() - startTimeScraper) / 1000
                 println("[Engine] Završio ${scraper.cinemaName} za $duration sekundi. Nađeno: ${rezultati.size}")

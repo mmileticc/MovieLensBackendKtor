@@ -15,7 +15,14 @@ object LokacijeBioskopa {
         // Van Beograda
         "CINEPLEXX NOVI SAD" to GeoKoordinate(45.24635819154759, 19.84407774885036),    // Promenada Shopping Center
         "CINEPLEXX NIŠ, STOP SHOP" to GeoKoordinate(43.31147230494104, 21.937512027273435), // Stop Shop Niš
-        "CINEPLEXX BIG KRAGUJEVAC" to GeoKoordinate(44.00873780212743, 20.89577123895372)  // BIG Kragujevac (bivša Plaza)
+        "CINEPLEXX BIG KRAGUJEVAC" to GeoKoordinate(44.00873780212743, 20.89577123895372),  // BIG Kragujevac (bivša Plaza)
+
+        //Cine Grand-s
+        "CINE GRAND BIG RAKOVICA" to GeoKoordinate(44.739390321835266, 20.437888242328093),      // Patrijarha Dimitrija 14, Beograd (Rakovica)
+        "CINE GRAND DELTA PLANET" to GeoKoordinate(43.436770798684805, 21.943052760736126),      // Delta Planet Niš
+        "CINE GRAND BIG ČAČAK" to GeoKoordinate(43.88949644029959, 20.37005068127539),         // BIG Čačak
+        "CINE GRAND BIG ŠABAC" to GeoKoordinate(44.74893526332583, 19.706378034757783),         // BIG Šabac
+        "BIOSKOP VILIN GRAD" to GeoKoordinate(43.31914466808712, 21.89501503891535)            // Vilin Grad
     )
 
     /**
