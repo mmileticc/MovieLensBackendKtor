@@ -13,6 +13,7 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
+import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 
 // 1. Mapiranje tabele iz baze u Kotlin objekat
@@ -79,6 +80,27 @@ class ScrapedMoviesRepository {
     // 2. Čitanje svih filmova iz baze (ako ti zatrebaju da ih vratiš kroz rutu)
     suspend fun getAllScrapedMovies(): List<ScrapedMovie> = dbQuery {
         ScrapedMoviesTable.selectAll().map { row ->
+            ScrapedMovie(
+                title = row[ScrapedMoviesTable.title],
+                originalTitle = row[ScrapedMoviesTable.originalTitle],
+                cinemaName = row[ScrapedMoviesTable.cinemaName],
+                cinemaLocation = row[ScrapedMoviesTable.cinemaLocation],
+                latitude = row[ScrapedMoviesTable.latitude],
+                longitude = row[ScrapedMoviesTable.longitude],
+                bookingUrl = row[ScrapedMoviesTable.bookingUrl],
+                isUpcoming = row[ScrapedMoviesTable.isUpcoming],
+                tmdbId = row[ScrapedMoviesTable.tmdbId]
+            )
+        }
+    }
+
+    /**
+     * Svi bioskopski termini za konkretan film (Movie Detail ekran - "Bioskopski termini"
+     * sekcija). `tmdbId eq tmdbId` unutar select{} bloka - eq je SqlExpressionBuilder član, radi
+     * preko implicitnog receiver-a, bez potrebe za importom (isti obrazac kao ostatak baze).
+     */
+    suspend fun getShowtimesForMovie(tmdbId: Int): List<ScrapedMovie> = dbQuery {
+        ScrapedMoviesTable.select { ScrapedMoviesTable.tmdbId eq tmdbId }.map { row ->
             ScrapedMovie(
                 title = row[ScrapedMoviesTable.title],
                 originalTitle = row[ScrapedMoviesTable.originalTitle],

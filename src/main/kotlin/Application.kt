@@ -155,7 +155,7 @@ fun Application.module() {
         configureScrapingLifecycle(tmdbService)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
-    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository())
+    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
 }

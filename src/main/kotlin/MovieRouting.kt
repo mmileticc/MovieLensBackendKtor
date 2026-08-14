@@ -1,6 +1,7 @@
 package com.milinko
 
 import com.milinko.db.FriendshipsRepository
+import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.TmdbMovieMatch
@@ -12,6 +13,9 @@ import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.principal
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -48,6 +52,20 @@ data class CastMemberDto(
     @SerialName("profile_path") val profilePath: String? = null
 )
 
+// Bioskopski termin za dati film (Movie Detail - "Bioskopski termini" sekcija). distanceKm je
+// null ako klijent nije poslao lat/lon (korisnik nije dao dozvolu za lokaciju) - u tom slučaju
+// lista nije sortirana po udaljenosti, samo u redosledu iz baze.
+@Serializable
+data class CinemaShowtimeDto(
+    @SerialName("cinema_name") val cinemaName: String,
+    @SerialName("cinema_location") val cinemaLocation: String,
+    @SerialName("booking_url") val bookingUrl: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    @SerialName("distance_km") val distanceKm: Double? = null,
+    @SerialName("is_upcoming") val isUpcoming: Boolean = false
+)
+
 @Serializable
 data class MovieDetailDto(
     val id: Int,
@@ -60,10 +78,20 @@ data class MovieDetailDto(
     val runtime: Int = 0,
     val genres: List<GenreDto> = emptyList(),
     val cast: List<CastMemberDto> = emptyList(),
-    // Bioskopski termini se ovde namerno ne popunjavaju - videti napomenu u
-    // TmdbService.getMovieDetails i MOVIELENS_ROADMAP.md. Uvek prazna lista za sada.
-    val showtimes: List<String> = emptyList()
+    val showtimes: List<CinemaShowtimeDto> = emptyList()
 )
+
+/** Haversine formula - distanca u km između dve geo-tačke (korisnik i bioskop). */
+private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val earthRadiusKm = 6371.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
+        kotlin.math.cos(Math.toRadians(lat1)) * kotlin.math.cos(Math.toRadians(lat2)) *
+        kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
+    val c = 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
+    return earthRadiusKm * c
+}
 
 private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
     id = id ?: 0,
@@ -86,11 +114,27 @@ data class FriendWatchedDto(
 @Serializable
 data class FriendsWatchedResponseDto(val friends: List<FriendWatchedDto>)
 
+// "U bioskopima sada" traka na Home-u - iskorišćava postojeći skraping repertoara
+// (ScrapedMoviesRepository, do sad korišćen samo interno za /chat/vision cross-check), grupisano
+// po tmdbId sa listom bioskopa gde se film trenutno prikazuje.
+@Serializable
+data class NowInCinemasMovieDto(
+    val id: Int,
+    val title: String,
+    @SerialName("poster_path") val posterPath: String? = null,
+    @SerialName("vote_average") val voteAverage: Double = 0.0,
+    val cinemas: List<String> = emptyList()
+)
+
+@Serializable
+data class NowInCinemasResponseDto(val results: List<NowInCinemasMovieDto>)
+
 fun Application.configureMovieRouting(
     tmdbService: TmdbService,
     friendshipsRepository: FriendshipsRepository,
     userActionsRepository: UserActionsRepository,
-    tasteProfileRepository: TasteProfileRepository
+    tasteProfileRepository: TasteProfileRepository,
+    scrapedMoviesRepository: ScrapedMoviesRepository
 ) {
     routing {
         route("/api/movies") {
@@ -126,6 +170,7 @@ fun Application.configureMovieRouting(
                 // Bez userId-a, praznog profila (nov korisnik), ili ako discover ne vrati ništa -
                 // tih fallback na popularne, isto ponašanje kao ranije (nikad prazan ekran).
                 val userId = call.request.queryParameters["userId"]?.trim()?.takeIf { it.isNotBlank() }
+                val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
                 try {
                     val personalized = userId?.let { uid ->
                         val topGenreIds = tasteProfileRepository.getTasteProfile(uid).take(3).map { it.genreId }
@@ -136,12 +181,12 @@ fun Application.configureMovieRouting(
                             // gurnulo ovaj žanr na vrh profila - bez ovog filtera bi se stalno
                             // vraćali kao "predlog" isti filmovi koje je korisnik već video.
                             val alreadyWatched = userActionsRepository.getHistory(uid).map { it.tmdbId }.toSet()
-                            tmdbService.getMoviesByGenres(topGenreIds)
+                            tmdbService.getMoviesByGenres(topGenreIds, page)
                                 .filter { it.id != null && it.id.toLong() !in alreadyWatched }
                                 .takeIf { it.isNotEmpty() }
                         }
                     }
-                    val results = personalized ?: tmdbService.getPopularMovies(1)
+                    val results = personalized ?: tmdbService.getPopularMovies(page)
                     call.respond(MovieListResponseDto(results.map { it.toDto() }))
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/featured: ${e.message}")
@@ -149,12 +194,69 @@ fun Application.configureMovieRouting(
                 }
             }
 
+            get("/now-in-cinemas") {
+                try {
+                    val scraped = scrapedMoviesRepository.getAllScrapedMovies()
+                    // Isti film se u repertoaru pojavljuje jednom po bioskopu/sali - grupišemo po
+                    // tmdbId (samo redovi koji su uspešno povezani sa TMDB-om tokom skrapovanja).
+                    val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
+
+                    val results = coroutineScope {
+                        byTmdbId.entries.take(20).map { (tmdbId, rows) ->
+                            async {
+                                val detail = try {
+                                    tmdbService.getMovieDetails(tmdbId)
+                                } catch (e: Exception) {
+                                    null
+                                } ?: return@async null
+                                NowInCinemasMovieDto(
+                                    id = detail.id,
+                                    title = detail.title,
+                                    posterPath = detail.posterPath,
+                                    voteAverage = detail.voteAverage ?: 0.0,
+                                    cinemas = rows.map { it.cinemaName }.distinct().sorted()
+                                )
+                            }
+                        }.awaitAll().filterNotNull()
+                    }
+                    call.respond(NowInCinemasResponseDto(results))
+                } catch (e: Exception) {
+                    println("[ERROR] /api/movies/now-in-cinemas: ${e.message}")
+                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Repertoar trenutno nije dostupan"))
+                }
+            }
+
             get("/{tmdbId}") {
                 val tmdbId = call.parameters["tmdbId"]?.toIntOrNull()
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
+                // Opciono - Android šalje samo ako je korisnik dao dozvolu za lokaciju. Kad su
+                // prisutni, bioskopi se sortiraju po udaljenosti; inače ostaju u redosledu iz baze.
+                val lat = call.request.queryParameters["lat"]?.toDoubleOrNull()
+                val lon = call.request.queryParameters["lon"]?.toDoubleOrNull()
                 try {
                     val detail = tmdbService.getMovieDetails(tmdbId)
                         ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije pronađen"))
+
+                    val showtimeRows = scrapedMoviesRepository.getShowtimesForMovie(tmdbId)
+                    var showtimes = showtimeRows.map { row ->
+                        val distanceKm = if (lat != null && lon != null && row.latitude != null && row.longitude != null) {
+                            haversineKm(lat, lon, row.latitude, row.longitude)
+                        } else {
+                            null
+                        }
+                        CinemaShowtimeDto(
+                            cinemaName = row.cinemaName,
+                            cinemaLocation = row.cinemaLocation,
+                            bookingUrl = row.bookingUrl,
+                            latitude = row.latitude,
+                            longitude = row.longitude,
+                            distanceKm = distanceKm,
+                            isUpcoming = row.isUpcoming
+                        )
+                    }
+                    if (lat != null && lon != null) {
+                        showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
+                    }
 
                     call.respond(
                         MovieDetailDto(
@@ -167,7 +269,8 @@ fun Application.configureMovieRouting(
                             voteAverage = detail.voteAverage ?: 0.0,
                             runtime = detail.runtime ?: 0,
                             genres = detail.genres.map { GenreDto(it.id, it.name) },
-                            cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) }
+                            cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) },
+                            showtimes = showtimes
                         )
                     )
                 } catch (e: Exception) {

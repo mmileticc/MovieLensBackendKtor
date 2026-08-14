@@ -270,6 +270,9 @@ fun Application.configureFriendsRouting(
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
                         val friendId = call.parameters["friendId"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nedostaje friendId"))
+                        // ?page= - koristi Android "Osveži predloge" dugme da dobije drugu TMDB
+                        // discover stranicu za isti par žanrova umesto uvek istih prvih 10 rezultata.
+                        val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
 
                         val status = friendshipsRepository.getFriendshipStatus(userId, friendId)
                         if (status != FriendshipStatus.ACCEPTED) {
@@ -298,7 +301,7 @@ fun Application.configureFriendsRouting(
                             .map { it.tmdbId }
                             .toSet()
 
-                        val suggestions = tmdbService.getMoviesByGenres(topGenreIds)
+                        val suggestions = tmdbService.getMoviesByGenres(topGenreIds, page)
                             .filter { it.id != null && it.id.toLong() !in alreadySeen }
                             .take(10)
                             .map { movie ->
