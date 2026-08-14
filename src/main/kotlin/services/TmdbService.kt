@@ -210,10 +210,16 @@ class TmdbService(private val apiKey: String) {
     }
 
     /**
-     * TMDB "discover" po žanrovima - koristi se za personalizovan /api/movies/featured (Faza 4,
-     * MOVIELENS_ROADMAP.md). `genreIds` se šalje TMDB-u zarezom-razdvojeno, što TMDB tumači kao
-     * OR (bilo koji od navedenih žanrova) - namerno, ne AND (pipe "|"), jer bismo inače lako dobili
-     * prazne rezultate za korisnika sa raznovrsnim ukusom.
+     * TMDB "discover" po žanrovima - koristi se za personalizovan /api/movies/featured (Faza 4)
+     * i za /movienight-suggestions (Faza 4.5). `genreIds` se šalje TMDB-u pipe-razdvojeno ("|"),
+     * što TMDB tumači kao OR (bilo koji od navedenih žanrova).
+     *
+     * ISPRAVKA (bio bug): ranije je ovde stajalo zarezom-razdvojeno ("with_genres=28,35,80"), za
+     * koje smo pogrešno mislili da je OR - TMDB dokumentacija to zapravo tumači kao AND (film mora
+     * imati SVE navedene žanrove). Zato su predlozi za zajedničko gledanje sa presekom više žanrova
+     * (npr. Animation+Action+Comedy) kolabirali skoro isključivo na animirane filmove - AND upit je
+     * bio previše uzak i vraćao je uglavnom filmove koji spadaju u sve žanrove odjednom. Pipe "|" je
+     * ispravan operator za "bilo koji od ovih žanrova".
      */
     suspend fun getMoviesByGenres(genreIds: List<Int>, page: Int = 1): List<TmdbMovieMatch> {
         if (genreIds.isEmpty()) return emptyList()
@@ -221,7 +227,7 @@ class TmdbService(private val apiKey: String) {
         discoverCache.get(cacheKey)?.let { return it }
 
         val url = URLBuilder("https://api.themoviedb.org/3/discover/movie").apply {
-            parameters.append("with_genres", genreIds.joinToString(","))
+            parameters.append("with_genres", genreIds.joinToString("|"))
             parameters.append("sort_by", "popularity.desc")
             parameters.append("language", "en-US")
             parameters.append("page", page.toString())
