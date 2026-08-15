@@ -22,7 +22,15 @@ object LokacijeBioskopa {
         "CINE GRAND DELTA PLANET" to GeoKoordinate(43.436770798684805, 21.943052760736126),      // Delta Planet Niš
         "CINE GRAND BIG ČAČAK" to GeoKoordinate(43.88949644029959, 20.37005068127539),         // BIG Čačak
         "CINE GRAND BIG ŠABAC" to GeoKoordinate(44.74893526332583, 19.706378034757783),         // BIG Šabac
-        "BIOSKOP VILIN GRAD" to GeoKoordinate(43.31914466808712, 21.89501503891535)            // Vilin Grad
+        "BIOSKOP VILIN GRAD" to GeoKoordinate(43.31914466808712, 21.89501503891535),           // Vilin Grad
+
+        // CineStar - 4 lokacije (nađene preko "Izaberi svoj CineStar" dropdowna na
+        // cinestarcinemas.rs/program-svi-bioskopi). NAMERNO su ovo placeholder (0.0, 0.0)
+        // vrednosti - isti dogovor kao za Cine Grand: tačne koordinate ubacuje korisnik ručno.
+        "CINESTAR BEOGRAD ADA MALL" to GeoKoordinate(44.78747265992491, 20.418651710161956),
+        "CINESTAR NOVI SAD BIG" to GeoKoordinate(45.275164118009386, 19.82904320780292),
+        "CINESTAR PANČEVO BIG" to GeoKoordinate(44.86756626213137, 20.661181158047636),
+        "CINESTAR ZRENJANIN BIG" to GeoKoordinate(45.37829705004845, 20.355093067867404)
     )
 
     /**

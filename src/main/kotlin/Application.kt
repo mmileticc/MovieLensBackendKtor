@@ -12,6 +12,7 @@ import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
+import com.milinko.scraping.scraper.CineStarScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import com.milinko.services.GeminiService
@@ -211,7 +212,8 @@ fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
                     MtsDvoranaScraper(),
                     CineplexxScraper(),
                     ArenaCineplexScraper(),
-                    CineGrandScraper()
+                    CineGrandScraper(),
+                    CineStarScraper()
                 )
                 val engine = ScrapingEngineConcurrent(aktivniScraperi)
                 val skrapovaniFilmovi = engine.runAllScrapers(danasnjiDatum)

@@ -1,6 +1,7 @@
 package com.milinko.scraping
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
+import com.milinko.scraping.scraper.CineStarScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import kotlinx.coroutines.Dispatchers
@@ -40,10 +41,11 @@ suspend fun main() {
     println("=== DIJAGNOSTIČKI TEST SKRAPOVANJA (bez upisa u bazu) ===")
 
     val aktivniScraperi = listOf(
-        MtsDvoranaScraper(),
-        CineplexxScraper(),
-        ArenaCineplexScraper(),
-        CineGrandScraper()
+//        MtsDvoranaScraper(),
+//        CineplexxScraper(),
+//        ArenaCineplexScraper(),
+//        CineGrandScraper(),
+        CineStarScraper()
     )
 
     val engine = ScrapingEngineConcurrent(aktivniScraperi)
