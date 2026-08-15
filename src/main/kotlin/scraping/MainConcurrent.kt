@@ -4,6 +4,8 @@ import com.milinko.scraping.scraper.CineGrandScraper
 import com.milinko.scraping.scraper.CineStarScraper
 import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
+import com.milinko.scraping.scraper.RodaCineplexScraper
+import com.milinko.scraping.scraper.TuckwoodCineplexScraper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import scraping.ScrapingEngineConcurrent
@@ -45,7 +47,9 @@ suspend fun main() {
 //        CineplexxScraper(),
 //        ArenaCineplexScraper(),
 //        CineGrandScraper(),
-        CineStarScraper()
+//        CineStarScraper(),
+        RodaCineplexScraper(),
+        TuckwoodCineplexScraper()
     )
 
     val engine = ScrapingEngineConcurrent(aktivniScraperi)

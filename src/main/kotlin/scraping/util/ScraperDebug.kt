@@ -35,3 +35,26 @@ fun dumpScraperDebugArtifacts(page: Page, cinemaName: String, stage: String) {
         println("[$cinemaName] [DEBUG] Nisam uspeo da sačuvam dijagnostički snimak: ${e.message}")
     }
 }
+
+/**
+ * Ista svrha kao gornja verzija, ali za skrapere BEZ Playwright browsera (npr. ArenaCineplex/
+ * RodaCineplex koriste samo Jsoup.connect() - obično HTTP GET, nema stranice za screenshot).
+ * Snima samo sirov HTML odgovor - i dalje dovoljno da se vidi da li je selektor promenjen,
+ * stranica preusmerena na nešto neočekivano, ili odgovor uopšte nije ono što se očekivalo.
+ */
+fun dumpScraperDebugArtifacts(html: String, cinemaName: String, stage: String) {
+    try {
+        val dir = File("scraper-debug")
+        if (!dir.exists()) dir.mkdirs()
+
+        val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"))
+        val safeName = cinemaName.replace(" ", "_").lowercase()
+        val base = "${safeName}_${stage}_$timestamp"
+
+        File(dir, "$base.html").writeText(html)
+
+        println("[$cinemaName] [DEBUG] Sačuvan dijagnostički HTML snimak (bez screenshot-a, Jsoup scraper nema browser): scraper-debug/$base.html")
+    } catch (e: Exception) {
+        println("[$cinemaName] [DEBUG] Nisam uspeo da sačuvam dijagnostički snimak: ${e.message}")
+    }
+}
