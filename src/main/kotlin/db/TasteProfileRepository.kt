@@ -84,12 +84,21 @@ class TasteProfileRepository {
         // rangiralo ČISTO po averageRating (pa tek onda po movieCount kao tie-breaker), što znači da
         // je JEDAN film ocenjen 10/10 u sporednom žanru upadao na vrh profila iznad žanra sa npr. 15
         // filmova i prosekom 8/10 - taj slučajni/sporedni žanr bi onda dominirao "Predloženo za
-        // tebe". Ovde koristimo Bayesian shrinkage (isti princip kao "IMDB weighted rating") SAMO za
-        // REDOSLED - žanru sa malo filmova se prosek "povlači" ka korisnikovom globalnom proseku dok
-        // ne skupi dovoljno filmova da mu se veruje; `averageRating` u vraćenom objektu ostaje
-        // NEDIRNUTO sirovo (prikaz na profilu i compareTasteProfiles i dalje rade sa pravim prosekom).
-        val globalAverage = ratedRows.map { it.first }.average().takeIf { !it.isNaN() } ?: 6.5
-        val priorWeight = 5.0 // "virtuelnih filmova" po globalnom proseku dodatih pre nego što žanru verujemo
+        // tebe".
+        //
+        // Dorada #2 (16. avgust 2026, korisnik pokazao konkretan primer): prvi pokušaj (Bayesian
+        // shrinkage ka korisnikovom globalnom proseku) NIJE bio dovoljan - npr. Fantasy(10.0, 1 film)
+        // je ostajao iznad Action(9.5, 4 filma), jer shrinkage-ka-proseku matematički NE MOŽE da
+        // obrne redosled dva žanra čiji sirovi proseci padaju sa suprotnih strana proseka (žanr iznad
+        // proseka se povlači naniže ali nikad ne padne ispod njega samo zbog malog uzorka). Zamenjeno
+        // sa "kazna po neizvesnosti" (isti duh kao Wilson/lower-confidence-bound rangiranje) -
+        // oduzima se CONFIDENCE_PENALTY_Z / sqrt(movieCount) direktno od ocene, bez oslanjanja na bilo
+        // čiji prosek - žanr sa 1 filmom uvek dobija veliku kaznu (z=1.5 -> -1.5) nezavisno od ostatka
+        // profila, dok žanr sa 4+ filmova dobija mnogo manju. `averageRating` u vraćenom objektu
+        // ostaje NEDIRNUTO sirovo (prikaz na profilu i compareTasteProfiles i dalje rade sa pravim
+        // prosekom - ista konstanta i logika sad postoji i na Android strani, ProfileScreen.kt
+        // TasteProfileSection, za "Tvoj ukus" prikaz koji ne prolazi kroz ovu rutu).
+        val confidencePenaltyZ = 1.5
 
         ratingSumByGenreId.keys
             .map { genreId ->
@@ -103,7 +112,7 @@ class TasteProfileRepository {
                 )
             }
             .sortedByDescending { affinity ->
-                (globalAverage * priorWeight + affinity.averageRating * affinity.movieCount) / (priorWeight + affinity.movieCount)
+                affinity.averageRating - confidencePenaltyZ / kotlin.math.sqrt(affinity.movieCount.toDouble())
             }
     }
 }
