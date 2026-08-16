@@ -67,7 +67,13 @@ data class PendingRequestsResponseDto(val requests: List<PendingRequestDto>)
 data class FriendActionRequest(val action: String)
 
 @Serializable
-data class ActivityMetadataDto(val rating: Double? = null, @SerialName("watched_at") val watchedAt: Long? = null)
+data class ActivityMetadataDto(
+    val rating: Double? = null,
+    // Kratak tekstualni komentar uz ocenu (16. avgust 2026) - isto polje kao HistoryItemDto.review,
+    // prosleđeno kroz aktivnost prijatelja za buduću upotrebu u feed-u.
+    val review: String? = null,
+    @SerialName("watched_at") val watchedAt: Long? = null
+)
 
 @Serializable
 data class FriendActivityDto(
@@ -93,6 +99,7 @@ data class FriendProfileMovieDto(
     val title: String,
     @SerialName("poster_path") val posterPath: String? = null,
     val rating: Int? = null,
+    val review: String? = null,
     @SerialName("watched_at") val watchedAt: Long
 )
 
@@ -221,6 +228,7 @@ fun Application.configureFriendsRouting(
                                 posterPath = row.posterPath,
                                 metadata = ActivityMetadataDto(
                                     rating = row.rating?.toDouble(),
+                                    review = row.review,
                                     watchedAt = row.createdAt.toEpochMillisOrNow()
                                 ),
                                 timestamp = row.createdAt.toEpochMillisOrNow()
@@ -253,6 +261,7 @@ fun Application.configureFriendsRouting(
                                 title = row.title,
                                 posterPath = row.posterPath,
                                 rating = row.rating,
+                                review = row.review,
                                 watchedAt = row.createdAt.toEpochMillisOrNow()
                             )
                         }

@@ -32,6 +32,11 @@ object UserActionsTable : Table("user_actions") {
     val movieId = long("movie_id") references MoviesTable.tmdbId
     val actionType = varchar("action_type", 20)
     val rating = integer("rating").nullable()
+    // Faza "komentar uz ocenu" (16. avgust 2026) - kratak tekstualni utisak uz WATCHED ocenu,
+    // opcion, nezavisan od rating-a (može postojati i bez ocene). Nova kolona na tabeli koja već
+    // postoji u produkciji - Exposed-ov createMissingTablesAndColumns je dodaje bez ručne migracije
+    // (nullable, bez CHECK constraint-a, isto kao bio na UsersTable).
+    val review = text("review").nullable()
     val createdAt = datetime("created_at").nullable().clientDefault {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)
     }

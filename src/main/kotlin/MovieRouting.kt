@@ -108,7 +108,11 @@ private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
 data class FriendWatchedDto(
     @SerialName("friend_id") val friendId: String,
     @SerialName("friend_name") val friendName: String,
-    val rating: Int? = null
+    val rating: Int? = null,
+    // Kratak tekstualni komentar prijatelja uz ocenu (16. avgust 2026, korisnička žalba: komentari
+    // se nisu prikazivali NIGDE, ni sopstvenom korisniku ni prijateljima) - isto polje kao
+    // HistoryItemDto.review.
+    val review: String? = null
 )
 
 @Serializable
@@ -291,7 +295,7 @@ fun Application.configureMovieRouting(
                 val watched = userActionsRepository.getFriendsWhoWatched(friendIds, tmdbId)
                 call.respond(
                     FriendsWatchedResponseDto(
-                        watched.map { FriendWatchedDto(it.friendId, it.friendUsername ?: "Korisnik", it.rating) }
+                        watched.map { FriendWatchedDto(it.friendId, it.friendUsername ?: "Korisnik", it.rating, it.review) }
                     )
                 )
             }

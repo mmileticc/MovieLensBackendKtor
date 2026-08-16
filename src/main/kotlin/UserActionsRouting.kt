@@ -54,6 +54,8 @@ data class HistoryItemDto(
     // 0.0 = odgledano bez ocene (rating je null u bazi). Android prikazuje "X/10" bez posebne
     // provere za "nema ocene" - poznato pojednostavljenje za MVP, videti MOVIELENS_ROADMAP.md.
     @SerialName("user_rating") val userRating: Double = 0.0,
+    // Kratak tekstualni komentar uz ocenu (16. avgust 2026) - opcion, nezavisan od userRating-a.
+    val review: String? = null,
     @SerialName("watched_at") val watchedAt: Long,
     // Nema duration kolone u stvarnoj šemi - uvek 0 (Android ekran ga ni ne prikazuje).
     val duration: Int = 0
@@ -63,10 +65,15 @@ data class HistoryItemDto(
 data class HistoryResponseDto(val items: List<HistoryItemDto>)
 
 @Serializable
-data class AddToHistoryRequest(val tmdbId: Int, val rating: Double? = null, val duration: Int? = null)
+data class AddToHistoryRequest(val tmdbId: Int, val rating: Double? = null, val review: String? = null, val duration: Int? = null)
 
+// `review = null` znači "ne diraj postojeći komentar" (npr. brzi PUT samo za ocenu iz Library ->
+// Istorija taba, gde review polje nije ni prikazano) - videti napomenu u
+// UserActionsRepository.markWatched o null-vs-prazan-string razlici.
+// `rating` je nullable (izmena u odnosu na raniju verziju) - podržava "napiši komentar bez ocene"
+// (film je odgledan, ali korisnik namerno ne daje zvezdice, samo ostavlja utisak u tekstu).
 @Serializable
-data class UpdateHistoryRequest(val rating: Double)
+data class UpdateHistoryRequest(val rating: Double? = null, val review: String? = null)
 
 // Taste profile (Faza 4) - prosečna ocena po žanru, izvedeno direktno iz ocena bez "crne kutije".
 @Serializable
@@ -131,8 +138,11 @@ private fun UserActionMovieRow.toHistoryDto() = HistoryItemDto(
     title = title,
     posterPath = posterPath,
     userRating = rating?.toDouble() ?: 0.0,
+    review = review,
     watchedAt = createdAt.toEpochMillisOrNow()
 )
+
+private const val REVIEW_MAX_LENGTH = 1000
 
 /** Zaokružuje na najbliži ceo broj i ograničava na [1,10] (DB CHECK opseg). Null ostaje null. */
 private fun Double?.toRatingIntOrNull(): Int? {
@@ -258,7 +268,12 @@ fun Application.configureUserActionsRouting(
                             return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Nevalidan film"))
                         }
 
-                        userActionsRepository.markWatched(userId, req.tmdbId.toLong(), req.rating.toRatingIntOrNull())
+                        userActionsRepository.markWatched(
+                            userId,
+                            req.tmdbId.toLong(),
+                            req.rating.toRatingIntOrNull(),
+                            req.review?.trim()?.take(REVIEW_MAX_LENGTH)
+                        )
                         val item = userActionsRepository.getHistoryItem(userId, req.tmdbId.toLong())
                             ?: return@post call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Neočekivana greška pri čuvanju"))
                         call.respond(item.toHistoryDto())
@@ -277,7 +292,12 @@ fun Application.configureUserActionsRouting(
                         val existing = userActionsRepository.getHistoryItem(userId, tmdbId)
                             ?: return@put call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije u istoriji"))
 
-                        userActionsRepository.markWatched(userId, tmdbId, req.rating.toRatingIntOrNull())
+                        userActionsRepository.markWatched(
+                            userId,
+                            tmdbId,
+                            req.rating.toRatingIntOrNull(),
+                            req.review?.trim()?.take(REVIEW_MAX_LENGTH)
+                        )
                         val updated = userActionsRepository.getHistoryItem(userId, tmdbId) ?: existing
                         call.respond(updated.toHistoryDto())
                     }
