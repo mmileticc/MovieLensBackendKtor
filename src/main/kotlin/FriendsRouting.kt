@@ -77,6 +77,8 @@ data class FriendActivityDto(
     val action: String,
     @SerialName("tmdb_id") val tmdbId: Long,
     @SerialName("movie_title") val movieTitle: String,
+    // Faza 7 dorada - Profile ekran prikazuje poster umesto plain ikonice/rečenice.
+    @SerialName("poster_path") val posterPath: String? = null,
     val metadata: ActivityMetadataDto = ActivityMetadataDto(),
     val timestamp: Long
 )
@@ -99,6 +101,8 @@ data class FriendProfileResponseDto(
     val id: String,
     val username: String,
     @SerialName("avatar_url") val avatarUrl: String? = null,
+    // Faza 7 redizajna - prijateljev "mini status" ispod imena, isto polje kao sopstveni profil.
+    val bio: String? = null,
     @SerialName("watched_movies") val watchedMovies: List<FriendProfileMovieDto>
 )
 
@@ -214,6 +218,7 @@ fun Application.configureFriendsRouting(
                                 action = if (row.rating != null) "rated" else "watched",
                                 tmdbId = row.tmdbId,
                                 movieTitle = row.title,
+                                posterPath = row.posterPath,
                                 metadata = ActivityMetadataDto(
                                     rating = row.rating?.toDouble(),
                                     watchedAt = row.createdAt.toEpochMillisOrNow()
@@ -257,6 +262,7 @@ fun Application.configureFriendsRouting(
                                 id = friendUser.id,
                                 username = friendUser.username ?: "Korisnik",
                                 avatarUrl = friendUser.avatarUrl,
+                                bio = friendUser.bio,
                                 watchedMovies = watchedMovies
                             )
                         )

@@ -1,9 +1,12 @@
 package com.milinko
 
+import com.milinko.db.FriendshipsRepository
 import com.milinko.db.MoviesRepository
 import com.milinko.db.TasteProfileRepository
+import com.milinko.db.User
 import com.milinko.db.UserActionMovieRow
 import com.milinko.db.UserActionsRepository
+import com.milinko.db.UserDao
 import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -77,6 +80,40 @@ data class GenreAffinityDto(
 @Serializable
 data class TasteProfileResponseDto(val genres: List<GenreAffinityDto>)
 
+// Profil korisnika (Faza 7 redizajna) - GET/PUT /api/users/{userId}. Ranije nije postojalo na
+// backendu (Android je imao Retrofit ugovor spreman, ali je uvek dobijao 404 - videti
+// ProfileViewModel/SessionIdentityHeader fallback). username je jedinstven (kao Instagram handle),
+// bio je slobodan kratak opis - oboje se menjaju preko PUT /profile (UserDao.updateProfile).
+@Serializable
+data class UserStatsDto(
+    @SerialName("movies_watched") val moviesWatched: Int = 0,
+    @SerialName("movies_rated") val moviesRated: Int = 0,
+    @SerialName("friend_count") val friendCount: Int = 0
+)
+
+@Serializable
+data class UserProfileDto(
+    @SerialName("user_id") val userId: String,
+    val username: String,
+    val email: String,
+    val avatar: String? = null,
+    val bio: String? = null,
+    @SerialName("favorite_genres") val favoriteGenres: List<String> = emptyList(),
+    val stats: UserStatsDto = UserStatsDto()
+)
+
+// Android šalje ceo UserProfile objekat u PUT telu (postojeći Retrofit ugovor), ali ovde nam
+// trebaju samo username/bio/avatar - ignoreUnknownKeys=true (Application.kt) tiho ignoriše ostatak
+// (user_id/email/favorite_genres/stats) koji klijent ionako ne treba da menja ovom rutom.
+// avatar je opcion: null znači "ne diraj postojeću sliku" (korisnik menja samo username/bio bez
+// biranja nove slike) - da PUT bez izabrane slike ne obriše postojeći avatar.
+@Serializable
+data class UpdateProfileRequestDto(
+    val username: String,
+    val bio: String? = null,
+    val avatar: String? = null
+)
+
 private fun LocalDateTime?.toEpochMillisOrNow(): Long {
     val localDateTime = this ?: Clock.System.now().toLocalDateTime(TimeZone.UTC)
     return localDateTime.toInstant(TimeZone.UTC).toEpochMilliseconds()
@@ -107,7 +144,9 @@ fun Application.configureUserActionsRouting(
     tmdbService: TmdbService,
     userActionsRepository: UserActionsRepository,
     moviesRepository: MoviesRepository,
-    tasteProfileRepository: TasteProfileRepository
+    tasteProfileRepository: TasteProfileRepository,
+    userDao: UserDao,
+    friendshipsRepository: FriendshipsRepository
 ) {
     routing {
         authenticate("auth-jwt") {
@@ -117,6 +156,52 @@ fun Application.configureUserActionsRouting(
                     val pathUserId = parameters["userId"] ?: return null
                     val tokenUserId = principal<JWTPrincipal>()?.payload?.subject
                     return if (pathUserId == tokenUserId) pathUserId else null
+                }
+
+                // Sastavlja UserProfileDto iz UserDao.User + izvedenih statistika (watchlist/history
+                // rute su iznad, taste profile ispod - sve nezavisni pozivi, nema smisla dodavati
+                // async/paralelizaciju za samo self-profil poziv niskog obima).
+                suspend fun buildUserProfileDto(userId: String, user: User): UserProfileDto {
+                    val history = userActionsRepository.getHistory(userId)
+                    val friendCount = friendshipsRepository.getFriends(userId).size
+                    val topGenres = tasteProfileRepository.getTasteProfile(userId)
+                        .sortedByDescending { it.averageRating }
+                        .take(3)
+                        .map { it.genreName }
+                    return UserProfileDto(
+                        userId = user.id,
+                        username = user.username ?: "Korisnik",
+                        email = user.email ?: "",
+                        avatar = user.avatarUrl,
+                        bio = user.bio,
+                        favoriteGenres = topGenres,
+                        stats = UserStatsDto(
+                            moviesWatched = history.size,
+                            moviesRated = history.count { it.rating != null },
+                            friendCount = friendCount
+                        )
+                    )
+                }
+
+                get {
+                    val userId = call.ownerUserIdOrNull()
+                        ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovom profilu"))
+                    val user = userDao.findById(userId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Korisnik nije pronađen"))
+                    call.respond(buildUserProfileDto(userId, user))
+                }
+
+                put("/profile") {
+                    val userId = call.ownerUserIdOrNull()
+                        ?: return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovom profilu"))
+                    val req = call.receive<UpdateProfileRequestDto>()
+
+                    try {
+                        val updated = userDao.updateProfile(userId, req.username, req.bio, req.avatar)
+                        call.respond(buildUserProfileDto(userId, updated))
+                    } catch (e: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Nevalidan zahtev"))
+                    }
                 }
 
                 route("/watchlist") {
