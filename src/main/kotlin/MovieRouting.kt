@@ -1,6 +1,7 @@
 package com.milinko
 
 import com.milinko.db.FriendshipsRepository
+import com.milinko.db.GenreAffinity
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
@@ -93,6 +94,54 @@ private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double):
     return earthRadiusKm * c
 }
 
+// Manje od ovoliko ocenjenih filmova = profil je previše šumovit da bi mu se verovalo za
+// personalizaciju /featured (videti komentar na /featured ruti). Ispod praga se vraćaju generički
+// popularni filmovi, isto kao za korisnika bez ijedne ocene.
+private const val MIN_RATINGS_FOR_PERSONALIZATION = 3
+
+// Ciljni broj filmova po "stranici" predloga - isto koliko TMDB inače vraća po stranici (20), da
+// beskonačan skrol na Home-u nastavi da radi neprimetno kao i pre ove izmene.
+private const val FEATURED_PAGE_SIZE = 20
+
+// Svaki žanr dobija bar ovoliko mesta u predlogu, čak i onaj sa najslabijim afinitetom od top 3 -
+// sprečava da treći žanr praktično nestane iz predloga zbog zaokruživanja.
+private const val MIN_SLOTS_PER_GENRE = 2
+
+/**
+ * Umesto jednog "OR" TMDB discover upita preko sva 3 top žanra (sortiranog isključivo po globalnoj
+ * TMDB popularnosti - žanr koji korisnik "malo" voli i žanr koji "mnogo" voli su ranije dobijali
+ * podjednak broj mesta), svaki žanr se pretražuje POSEBNO. Broj filmova uzet iz svakog žanra je
+ * srazmeran njegovoj prosečnoj oceni (jači afinitet -> više mesta), uz `MIN_SLOTS_PER_GENRE` da i
+ * treći/najslabiji žanr ostane vidljivo zastupljen. Isti film može da se pojavi u rezultatima više
+ * žanrova (npr. film koji je i Akcija i Triler) - `seen` sprečava duplikate u finalnoj listi.
+ */
+private suspend fun fetchBlendedByGenreAffinity(
+    tmdbService: TmdbService,
+    genres: List<GenreAffinity>,
+    page: Int,
+    excludeTmdbIds: Set<Long>
+): List<TmdbMovieMatch> {
+    if (genres.isEmpty()) return emptyList()
+
+    val totalWeight = genres.sumOf { it.averageRating }
+    val remainingSlots = (FEATURED_PAGE_SIZE - MIN_SLOTS_PER_GENRE * genres.size).coerceAtLeast(0)
+    val slotsByGenre = genres.map { genre ->
+        val proportional = if (totalWeight > 0) ((genre.averageRating / totalWeight) * remainingSlots).toInt() else 0
+        MIN_SLOTS_PER_GENRE + proportional
+    }
+
+    val seen = mutableSetOf<Long>()
+    val result = mutableListOf<TmdbMovieMatch>()
+    for ((index, genre) in genres.withIndex()) {
+        val slots = slotsByGenre[index]
+        val fromGenre = tmdbService.getMoviesByGenres(listOf(genre.genreId), page)
+            .filter { it.id != null && it.id.toLong() !in excludeTmdbIds && seen.add(it.id.toLong()) }
+            .take(slots)
+        result += fromGenre
+    }
+    return result
+}
+
 private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
     id = id ?: 0,
     title = title,
@@ -170,24 +219,38 @@ fun Application.configureMovieRouting(
             get("/featured") {
                 // Faza 4 (MOVIELENS_ROADMAP.md): ako je userId prosleđen i korisnik ima dovoljno
                 // ocenjenih filmova da postoji taste profile, vraćamo TMDB discover po njegova 3
-                // najomiljenija žanra (po prosečnoj oceni) umesto generičkih popularnih filmova.
-                // Bez userId-a, praznog profila (nov korisnik), ili ako discover ne vrati ništa -
-                // tih fallback na popularne, isto ponašanje kao ranije (nikad prazan ekran).
+                // najomiljenija žanra umesto generičkih popularnih filmova. Bez userId-a, praznog
+                // profila (nov korisnik), premalo ocena, ili ako discover ne vrati ništa - fallback
+                // na popularne, isto ponašanje kao ranije (nikad prazan ekran).
+                //
+                // Dorada kvaliteta predloga (16. avgust 2026, korisnička žalba "nekad gađa dobro, a
+                // nekad baš brlja"): (1) dodat MIN_RATINGS_FOR_PERSONALIZATION prag - sa 1-2 ocene
+                // profil je previše šumovit da bi mu se verovalo, bolje generički popularni dok
+                // korisnik ne oceni bar par filmova; (2) ranije se sva 3 top žanra tražila JEDNIM
+                // "OR" upitom sortiranim isključivo po globalnoj TMDB popularnosti - žanr koji
+                // korisnik "malo" voli i žanr koji "mnogo" voli dobijali su podjednak broj mesta u
+                // predlogu. Sad se svaki žanr traži POSEBNO i meša se srazmerno afinitetu (videti
+                // fetchBlendedByGenreAffinity ispod).
                 val userId = call.request.queryParameters["userId"]?.trim()?.takeIf { it.isNotBlank() }
                 val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
                 try {
                     val personalized = userId?.let { uid ->
-                        val topGenreIds = tasteProfileRepository.getTasteProfile(uid).take(3).map { it.genreId }
-                        if (topGenreIds.isEmpty()) {
+                        val history = userActionsRepository.getHistory(uid)
+                        val totalRated = history.count { it.rating != null }
+                        if (totalRated < MIN_RATINGS_FOR_PERSONALIZATION) {
                             null
                         } else {
-                            // Filmovi koje je korisnik već odgledao/ocenio su upravo ono što je
-                            // gurnulo ovaj žanr na vrh profila - bez ovog filtera bi se stalno
-                            // vraćali kao "predlog" isti filmovi koje je korisnik već video.
-                            val alreadyWatched = userActionsRepository.getHistory(uid).map { it.tmdbId }.toSet()
-                            tmdbService.getMoviesByGenres(topGenreIds, page)
-                                .filter { it.id != null && it.id.toLong() !in alreadyWatched }
-                                .takeIf { it.isNotEmpty() }
+                            val topGenres = tasteProfileRepository.getTasteProfile(uid).take(3)
+                            if (topGenres.isEmpty()) {
+                                null
+                            } else {
+                                // Filmovi koje je korisnik već odgledao/ocenio su upravo ono što je
+                                // gurnulo ovaj žanr na vrh profila - bez ovog filtera bi se stalno
+                                // vraćali kao "predlog" isti filmovi koje je korisnik već video.
+                                val alreadyWatched = history.map { it.tmdbId }.toSet()
+                                fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
+                                    .takeIf { it.isNotEmpty() }
+                            }
                         }
                     }
                     val results = personalized ?: tmdbService.getPopularMovies(page)

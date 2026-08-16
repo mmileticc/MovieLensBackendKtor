@@ -80,16 +80,30 @@ class TasteProfileRepository {
             }
         }
 
+        // Bag korigovan (16. avgust 2026, korisnička žalba "predlozi nekad bas brljaju"): ranije se
+        // rangiralo ČISTO po averageRating (pa tek onda po movieCount kao tie-breaker), što znači da
+        // je JEDAN film ocenjen 10/10 u sporednom žanru upadao na vrh profila iznad žanra sa npr. 15
+        // filmova i prosekom 8/10 - taj slučajni/sporedni žanr bi onda dominirao "Predloženo za
+        // tebe". Ovde koristimo Bayesian shrinkage (isti princip kao "IMDB weighted rating") SAMO za
+        // REDOSLED - žanru sa malo filmova se prosek "povlači" ka korisnikovom globalnom proseku dok
+        // ne skupi dovoljno filmova da mu se veruje; `averageRating` u vraćenom objektu ostaje
+        // NEDIRNUTO sirovo (prikaz na profilu i compareTasteProfiles i dalje rade sa pravim prosekom).
+        val globalAverage = ratedRows.map { it.first }.average().takeIf { !it.isNaN() } ?: 6.5
+        val priorWeight = 5.0 // "virtuelnih filmova" po globalnom proseku dodatih pre nego što žanru verujemo
+
         ratingSumByGenreId.keys
             .map { genreId ->
                 val count = countByGenreId.getValue(genreId)
+                val average = ratingSumByGenreId.getValue(genreId) / count
                 GenreAffinity(
                     genreId = genreId,
                     genreName = nameByGenreId.getValue(genreId),
-                    averageRating = ratingSumByGenreId.getValue(genreId) / count,
+                    averageRating = average,
                     movieCount = count
                 )
             }
-            .sortedWith(compareByDescending<GenreAffinity> { it.averageRating }.thenByDescending { it.movieCount })
+            .sortedByDescending { affinity ->
+                (globalAverage * priorWeight + affinity.averageRating * affinity.movieCount) / (priorWeight + affinity.movieCount)
+            }
     }
 }
