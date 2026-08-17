@@ -25,12 +25,32 @@ data class FriendMatch(
     val sharedGenreIds: List<Int> // svi zajednički žanrovi, sortirano po "entuzijazmu" - za movienight discover upit
 )
 
+// "Kazna po neizvesnosti" (Wilson/lower-confidence-bound duh) - deljena između getTasteProfile
+// (rangiranje "Tvoj ukus") i compareTasteProfiles (rangiranje zajedničkih žanrova za prijatelje/
+// Movie Night) ispod, videti opširno obrazloženje u getTasteProfile. Izvučeno u jednu konstantu i
+// funkciju da se formula ne duplira/razilazi između dva mesta koja rade suštinski isti posao.
+private const val CONFIDENCE_PENALTY_Z = 1.5
+
+private fun GenreAffinity.confidenceScore(): Double =
+    averageRating - CONFIDENCE_PENALTY_Z / kotlin.math.sqrt(movieCount.toDouble())
+
 /**
  * Poredi dva taste profila (self, prijatelj) - ista logika kao GenreAffinity, samo za dvoje.
- * "Entuzijazam" po zajedničkom žanru = min(prosekA, prosekB) - namerno konzervativno, oba moraju
- * stvarno voleti žanr da bi se računao kao "zajednički", ne dovoljno da samo jedno visoko oceni.
+ * "Entuzijazam" po zajedničkom žanru = min(penalizovani skor A, penalizovani skor B) - namerno
+ * konzervativno, oba moraju stvarno I POUZDANO voleti žanr da bi visoko rangirao.
  * match_score = prosek entuzijazma preko svih zajedničkih žanrova, skalirano na 0-100 (ocene su
  * 1-10). Nema zajedničkih žanrova -> match_score 0, prazna lista - nema "izmišljanja" rezultata.
+ *
+ * Dorada (17. avgust 2026, korisničko pitanje "da li je primenjeno i na movie night predloge") -
+ * ranije je ovde `enthusiasmByGenreId` koristio SIROV `averageRating`, dok je `getTasteProfile`
+ * ispod već bio popravljen (dorada #2, 16. avgust) da koristi kaznu-po-neizvesnosti. Bez ove
+ * popravke, žanr gde oboje imaju SAMO PO 1 film ocenjen 10/10 je i dalje mogao da "pobedi" žanr sa
+ * 5+ zajedničkih omiljenih filmova i blago nižim prosekom - isti bug kao u taste profilu, samo za
+ * DVA korisnika umesto jednog. `sortedIds` (koji ide u `FriendsRouting.kt` `topGenreIds` za
+ * movienight-suggestions TMDB discover upit) i `matchScore` sad koriste penalizovan skor.
+ * `commonGenres` NAMERNO i dalje proverava SIROV prosek (>=6.0) - to pitanje je "da li oboje
+ * STVARNO vole ovaj žanr" (činjenica o ukusu), ne "koliko smo sigurni u tu činjenicu" (pouzdanost)
+ * - pouzdanost utiče na REDOSLED/match_score, ne na da li žanr uopšte kvalifikuje kao "omiljen".
  */
 fun compareTasteProfiles(self: List<GenreAffinity>, friend: List<GenreAffinity>): FriendMatch {
     val selfByGenreId = self.associateBy { it.genreId }
@@ -39,14 +59,17 @@ fun compareTasteProfiles(self: List<GenreAffinity>, friend: List<GenreAffinity>)
     if (sharedIds.isEmpty()) return FriendMatch(matchScore = 0f, commonGenres = emptyList(), sharedGenreIds = emptyList())
 
     val enthusiasmByGenreId = sharedIds.associateWith { genreId ->
-        minOf(selfByGenreId.getValue(genreId).averageRating, friendByGenreId.getValue(genreId).averageRating)
+        minOf(selfByGenreId.getValue(genreId).confidenceScore(), friendByGenreId.getValue(genreId).confidenceScore())
     }
     val matchScore = (enthusiasmByGenreId.values.average() * 10.0).toFloat().coerceIn(0f, 100f)
     val sortedIds = enthusiasmByGenreId.entries.sortedByDescending { it.value }.map { it.key }
-    // "Zajednički žanrovi" za prikaz = samo oni gde oboje stvarno vole (>=6/10), ne baš svaki
-    // dodir - inače bi "zajednički žanr" značio i "oboje smo videli po jedan loše ocenjen film".
+    // "Zajednički žanrovi" za prikaz = samo oni gde oboje stvarno vole (sirov prosek >=6/10), ne
+    // baš svaki dodir - inače bi "zajednički žanr" značio i "oboje smo videli po jedan loše
+    // ocenjen film".
     val commonGenres = sortedIds
-        .filter { enthusiasmByGenreId.getValue(it) >= 6.0 }
+        .filter { genreId ->
+            minOf(selfByGenreId.getValue(genreId).averageRating, friendByGenreId.getValue(genreId).averageRating) >= 6.0
+        }
         .take(3)
         .map { selfByGenreId.getValue(it).genreName }
 
@@ -95,11 +118,11 @@ class TasteProfileRepository {
         // oduzima se CONFIDENCE_PENALTY_Z / sqrt(movieCount) direktno od ocene, bez oslanjanja na bilo
         // čiji prosek - žanr sa 1 filmom uvek dobija veliku kaznu (z=1.5 -> -1.5) nezavisno od ostatka
         // profila, dok žanr sa 4+ filmova dobija mnogo manju. `averageRating` u vraćenom objektu
-        // ostaje NEDIRNUTO sirovo (prikaz na profilu i compareTasteProfiles i dalje rade sa pravim
-        // prosekom - ista konstanta i logika sad postoji i na Android strani, ProfileScreen.kt
-        // TasteProfileSection, za "Tvoj ukus" prikaz koji ne prolazi kroz ovu rutu).
-        val confidencePenaltyZ = 1.5
-
+        // ostaje NEDIRNUTO sirovo (prikaz na profilu i dalje radi sa pravim prosekom - ista logika
+        // sad postoji i na Android strani, ProfileScreen.kt TasteProfileSection, za "Tvoj ukus"
+        // prikaz koji ne prolazi kroz ovu rutu). Deljena `confidenceScore()` funkcija (iznad
+        // klase) - `compareTasteProfiles` (prijatelji/Movie Night) koristi istu formulu, videti
+        // dorada 17. avgust 2026.
         ratingSumByGenreId.keys
             .map { genreId ->
                 val count = countByGenreId.getValue(genreId)
@@ -111,8 +134,6 @@ class TasteProfileRepository {
                     movieCount = count
                 )
             }
-            .sortedByDescending { affinity ->
-                affinity.averageRating - confidencePenaltyZ / kotlin.math.sqrt(affinity.movieCount.toDouble())
-            }
+            .sortedByDescending { affinity -> affinity.confidenceScore() }
     }
 }
