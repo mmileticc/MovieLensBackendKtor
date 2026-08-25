@@ -140,13 +140,23 @@ class UserDao {
             .firstOrNull()
 
         if (existingUser != null) {
-            // Update postojećeg korisnika - username se NAMERNO ne dira ovde. Ranije se username
-            // prepisivao Google display imenom na SVAKOM login-u, što je brisalo bilo koju ručnu
-            // izmenu (UserDao.updateProfile) čim bi se korisnik ponovo ulogovao - popravljen bag.
-            // Samo email/avatar/last_login prate najsvežije podatke sa Google naloga.
+            // Update postojećeg korisnika - username se NAMERNO ne dira ovde (videti stariji
+            // komentar niže o istom bagu).
+            //
+            // Bugfix (25. avgust 2026, korisnička žalba "nova profilna se prikaže ali kasnije više
+            // ne, i kod prijatelja se ne vide postavljene slike nego samo difoltne") - avatarUrl je
+            // imao IDENTIČAN bag kao username pre popravke #107: prepisivao se Google/Firebase
+            // avatarom na SVAKOM login-u (redak niže je bio `stmt[UsersTable.avatarUrl] = avatarUrl`),
+            // što je brisalo ručno postavljenu sliku (UserDao.updateProfile) čim bi se korisnik
+            // ponovo ulogovao (token refresh, restart aplikacije...) - baš zato se novi avatar
+            // video odmah po podešavanju, a "kasnije više ne". Isti mehanizam je pogađao SVAKOG
+            // korisnika, ne samo trenutnog - zato su i kod prijatelja u listi umesto ručno
+            // postavljene slike ispadale difoltne (Google/Firebase) slike, jer se friendUser.avatarUrl
+            // u bazi vraćao na default čim bi se TAJ prijatelj sledeći put ulogovao. Sad se, kao i
+            // username, avatar NE dira na update-u - samo email/last_login i dalje prate najsvežije
+            // podatke sa Google naloga.
             UsersTable.update({ UsersTable.firebaseUid eq firebaseUid }) { stmt ->
                 stmt[UsersTable.email] = email
-                stmt[UsersTable.avatarUrl] = avatarUrl
                 stmt[UsersTable.lastLogin] = now
             }
         } else {
