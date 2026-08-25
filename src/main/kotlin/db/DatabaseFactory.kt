@@ -49,10 +49,13 @@ object DatabaseFactory {
                 MoviesTable,
                 UserActionsTable,
                 FriendshipsTable,
-                NotificationsTable
+                NotificationsTable,
+                // Faza D dorada #2 (23. avgust 2026) - trajni keš embedding vektora, videti
+                // MovieEmbeddingsTable.kt za obrazloženje.
+                MovieEmbeddingsTable
             )
         }
-        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications).")
+        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)

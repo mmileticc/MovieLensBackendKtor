@@ -39,6 +39,13 @@ dependencies {
     // Google AI SDK
     implementation("com.google.genai:google-genai:0.1.0")
 
+    // Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
+    // lokalno") - MiniLM embedding model, ONNX runtime + težine modela upakovani direktno u jar,
+    // radi u istom JVM procesu bez mrežnog poziva/API ključa. Namerno POSTOJI USPOREDO sa Gemini
+    // embedding-om (ne zamena) - korisnik želi da uporedi ponašanje, ne da trajno pređe (videti
+    // TextEmbedder.kt i napomenu u MOVIELENS_DESIGN_PLAN.md o kompromisu kvaliteta na srpskom).
+    implementation("dev.langchain4j:langchain4j-embeddings-all-minilm-l6-v2:1.19.0-beta29")
+
 
     // Potrebno za stabilan rad sa stream-ovima u Java SDK-u
     implementation("io.projectreactor:reactor-core:3.6.0")

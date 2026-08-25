@@ -5,6 +5,7 @@ import com.milinko.db.GenreAffinity
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
+import com.milinko.services.CinemaSemanticIndex
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
 import io.ktor.http.*
@@ -187,7 +188,9 @@ fun Application.configureMovieRouting(
     friendshipsRepository: FriendshipsRepository,
     userActionsRepository: UserActionsRepository,
     tasteProfileRepository: TasteProfileRepository,
-    scrapedMoviesRepository: ScrapedMoviesRepository
+    scrapedMoviesRepository: ScrapedMoviesRepository,
+    geminiCinemaSemanticIndex: CinemaSemanticIndex,
+    localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
     routing {
         route("/api/movies") {
@@ -290,6 +293,49 @@ fun Application.configureMovieRouting(
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/now-in-cinemas: ${e.message}")
                     call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Repertoar trenutno nije dostupan"))
+                }
+            }
+
+            // Faza D (17. avgust 2026, predlog mentora Marka) - semantička pretraga, namerno
+            // svedena na filmove trenutno na repertoaru (videti CinemaSemanticIndex - obrazloženje
+            // obima). Ista NowInCinemasResponseDto forma kao /now-in-cinemas gore - Android klijent
+            // ne treba nov model, samo drugačiji izvor podataka.
+            //
+            // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - opcioni `engine` query parametar
+            // bira koji od dva paralelna indeksa se koristi. Podrazumevano "gemini" - postojeći
+            // Android klijent (pre ove dorade) ne šalje ovaj parametar, pa mora nastaviti da radi
+            // identično kao pre.
+            get("/now-in-cinemas/semantic-search") {
+                val query = call.request.queryParameters["q"]?.trim().orEmpty()
+                if (query.isEmpty()) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Query parametar 'q' je obavezan"))
+                }
+                val engine = call.request.queryParameters["engine"]?.trim()?.lowercase().orEmpty()
+                val index = if (engine == "local") localCinemaSemanticIndex else geminiCinemaSemanticIndex
+                if (!index.isReady()) {
+                    // Indeks se puni asinhrono pri startu servera (uz dnevno skrejpovanje) - ako
+                    // upit stigne pre nego što se prvi refresh završi, vraćamo praznu listu umesto
+                    // greške (klijent to prikazuje kao "nema rezultata", ne kao pad mreže).
+                    return@get call.respond(NowInCinemasResponseDto(emptyList()))
+                }
+                try {
+                    val matches = index.searchByQuery(query)
+                    call.respond(
+                        NowInCinemasResponseDto(
+                            matches.map { entry ->
+                                NowInCinemasMovieDto(
+                                    id = entry.tmdbId,
+                                    title = entry.title,
+                                    posterPath = entry.posterPath,
+                                    voteAverage = entry.voteAverage,
+                                    cinemas = entry.cinemas
+                                )
+                            }
+                        )
+                    )
+                } catch (e: Exception) {
+                    println("[ERROR] /api/movies/now-in-cinemas/semantic-search: ${e.message}")
+                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Semantička pretraga nije uspela"))
                 }
             }
 

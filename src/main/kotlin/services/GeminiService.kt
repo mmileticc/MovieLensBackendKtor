@@ -4,6 +4,17 @@ import com.google.genai.Client
 import com.google.genai.types.Blob
 import com.google.genai.types.Content
 import com.google.genai.types.Part
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -12,7 +23,7 @@ import kotlinx.coroutines.withContext
 import java.util.Base64
 import java.util.concurrent.Executors
 
-class GeminiService(apiKey: String) {
+class GeminiService(private val apiKey: String) {
 
     // Koristimo namenski thread za blokirajuće SDK pozive da ne bismo gušili Ktor
     private val sdkDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -20,6 +31,24 @@ class GeminiService(apiKey: String) {
     private val client = Client.builder()
         .apiKey(apiKey)
         .build()
+
+    // Faza D (17. avgust 2026) - embedText ispod NAMERNO ne koristi `client` (com.google.genai SDK)
+    // iznad - verzija te biblioteke koju projekat koristi (0.1.0) je iz perioda PRE nego što je
+    // embedContent uopšte postojao u SDK-u (dodato tek u 0.3.0, uz breaking change na Blob.data()
+    // koji bi pogodio već testiran detectMoviesFromImage iznad). Umesto da se diže verzija cele
+    // zavisnosti (rizik po već radeći vision kod, bez mogućnosti da se ovde build stvarno proveri),
+    // embedContent REST endpoint se zove direktno preko Ktor HttpClient-a - isti obrazac kao
+    // TmdbService (CIO engine, JSON content negotiation), potpuno izolovano od SDK verzije.
+    private val restClient = HttpClient(CIO) {
+        install(HttpTimeout) {
+            connectTimeoutMillis = 5_000
+            requestTimeoutMillis = 15_000
+            socketTimeoutMillis = 15_000
+        }
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true; isLenient = true })
+        }
+    }
 
     /**
      * Detekcija filma sa slike: ignoriše se korisnički tekst i šalje se strogi uput Gemini‑ju
@@ -95,6 +124,40 @@ class GeminiService(apiKey: String) {
         }
     }
 
+    /**
+     * Faza D (17. avgust 2026, semantička pretraga filmova u bioskopima) - embeduje proizvoljan
+     * tekst preko Gemini REST API-ja (`models/gemini-embedding-001:embedContent`, dokumentacija:
+     * ai.google.dev/api/embeddings) - direktan HTTP poziv, ne SDK (videti obrazloženje na `restClient`
+     * iznad). `taskType` razdvaja embed filma ("RETRIEVAL_DOCUMENT") od embed-a korisničkog upita
+     * ("RETRIEVAL_QUERY") - Gemini preporučuje ovo razdvajanje radi boljeg kvaliteta pretrage (isti
+     * tekst embedovan sa pogrešnim taskType-om i dalje radi, samo lošije rangira rezultate). Vraća
+     * prazan niz ako Gemini ne vrati embedding (npr. prazan tekst) - pozivalac (CinemaSemanticIndex)
+     * treba da tretira to kao "film se ne indeksira", ne kao crash.
+     */
+    suspend fun embedText(text: String, taskType: String): FloatArray {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return FloatArray(0)
+
+        val requestBody = EmbedContentRequestDto(
+            model = "models/gemini-embedding-001",
+            content = EmbedContentPartsDto(parts = listOf(EmbedContentTextDto(text = trimmed))),
+            embedContentConfig = EmbedContentConfigDto(taskType = taskType)
+        )
+
+        val response = try {
+            restClient.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent") {
+                header("x-goog-api-key", apiKey)
+                contentType(ContentType.Application.Json)
+                setBody(requestBody)
+            }.body<EmbedContentResponseDto>()
+        } catch (e: Exception) {
+            throw IllegalStateException("Gemini embedding greška: ${e.message}", e)
+        }
+
+        val values = response.embedding?.values ?: emptyList()
+        return FloatArray(values.size) { i -> values[i] }
+    }
+
     private val JSON = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private fun sanitizeToJson(raw: String): String {
@@ -138,3 +201,28 @@ data class MovieCandidate(
     val confidence: Double? = null,
     val notes: String? = null
 )
+
+// Faza D (17. avgust 2026) - DTO-ovi tačno prate REST šemu iz ai.google.dev/api/embeddings
+// (models.embedContent) - namerno bez zavisnosti od com.google.genai SDK-a, videti obrazloženje
+// na GeminiService.restClient iznad.
+@Serializable
+private data class EmbedContentRequestDto(
+    val model: String,
+    val content: EmbedContentPartsDto,
+    val embedContentConfig: EmbedContentConfigDto
+)
+
+@Serializable
+private data class EmbedContentPartsDto(val parts: List<EmbedContentTextDto>)
+
+@Serializable
+private data class EmbedContentTextDto(val text: String)
+
+@Serializable
+private data class EmbedContentConfigDto(val taskType: String)
+
+@Serializable
+private data class EmbedContentResponseDto(val embedding: ContentEmbeddingDto? = null)
+
+@Serializable
+private data class ContentEmbeddingDto(val values: List<Float> = emptyList())

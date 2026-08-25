@@ -5,6 +5,8 @@ import com.auth0.jwt.algorithms.Algorithm
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
 import com.milinko.db.FriendshipsRepository
+import com.milinko.db.MovieEmbeddingsRepository
+import com.milinko.db.MovieEmbeddingsTable
 import com.milinko.db.MoviesRepository
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
@@ -17,7 +19,10 @@ import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import com.milinko.scraping.scraper.RodaCineplexScraper
 import com.milinko.scraping.scraper.TuckwoodCineplexScraper
+import com.milinko.services.CinemaSemanticIndex
 import com.milinko.services.GeminiService
+import com.milinko.services.GeminiTextEmbedder
+import com.milinko.services.LocalTextEmbedder
 import com.milinko.services.TmdbService
 import com.milinko.services.enrichWithTmdbIds
 import io.ktor.http.*
@@ -149,16 +154,26 @@ fun Application.module() {
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
     warmUpTmdbClient(tmdbService)
+    // Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
+    // lokalno") - DVA odvojena indeksa, po jedan za svaki TextEmbedder (Gemini REST poziv naspram
+    // lokalnog MiniLM-a preko ONNX-a, videti TextEmbedder.kt) - korisnik bira preko `engine`
+    // parametra na ruti (Android switch) da uporedi ponašanje. Vektori različitih embedder-a nisu
+    // međusobno uporedivi, pa svaki indeks mora imati SVOJ embedder.
+    // Faza D dorada #2 (23. avgust 2026) - jedan deljen repository, videti obrazloženje na
+    // CinemaSemanticIndex konstruktoru (razdvajanje po embedder.key se dešava unutar repository-ja).
+    val movieEmbeddingsRepository = MovieEmbeddingsRepository()
+    val geminiCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, GeminiTextEmbedder(geminiService), movieEmbeddingsRepository)
+    val localCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, LocalTextEmbedder(), movieEmbeddingsRepository)
     val scrapingBoolean = System.getenv("SCRAPING_BOOLEAN")
         ?: environment.config.propertyOrNull("ktor.scraping.enabled")?.getString()
         ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
 
 
     if (scrapingBoolean.lowercase() == "true") {
-        configureScrapingLifecycle(tmdbService)
+        configureScrapingLifecycle(tmdbService, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
-    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository)
+    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
 }
@@ -186,7 +201,11 @@ fun Application.warmUpTmdbClient(tmdbService: TmdbService) {
 }
 
 
-fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
+fun Application.configureScrapingLifecycle(
+    tmdbService: TmdbService,
+    geminiCinemaSemanticIndex: CinemaSemanticIndex,
+    localCinemaSemanticIndex: CinemaSemanticIndex
+) {
     val repository = ScrapedMoviesRepository()
 
     launch {
@@ -247,6 +266,27 @@ fun Application.configureScrapingLifecycle(tmdbService: TmdbService) {
 
                 val filmoviIzBaze = repository.getAllScrapedMovies()
                 println("[LOG] Učitano ${filmoviIzBaze.size} filmova direktno iz Supabase-a za rad aplikacije.")
+            }
+
+            // Faza D (17. avgust 2026) - indeks za semantičku pretragu se gradi OVDE, posle oba
+            // grane gore (i sveže skrejpovano i već sveže iz baze) - uvek treba da odražava trenutno
+            // stanje `scraped_movies` tabele, bez obzira da li je ovaj proces stvarno pokrenuo novo
+            // skrejpovanje ili ga je preskočio jer su podaci već od danas.
+            //
+            // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
+            // svom try/catch bloku, da pad jednog (npr. Gemini API greška) ne spreči osvežavanje
+            // drugog (lokalni MiniLM nema mrežnu zavisnost pa je manje verovatno da padne).
+            try {
+                geminiCinemaSemanticIndex.refresh()
+            } catch (e: Exception) {
+                println("[ERROR] CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}")
+                e.printStackTrace()
+            }
+            try {
+                localCinemaSemanticIndex.refresh()
+            } catch (e: Exception) {
+                println("[ERROR] CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}")
+                e.printStackTrace()
             }
 
         } catch (e: Exception) {
