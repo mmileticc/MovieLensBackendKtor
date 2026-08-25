@@ -33,7 +33,10 @@ class TmdbService(private val apiKey: String) {
     private val searchCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 10 * 60 * 1000)
     private val detailCache = TtlCache<Int, TmdbMovieDetail>(ttlMillis = 60 * 60 * 1000)
     private val popularCache = TtlCache<Int, List<TmdbMovieMatch>>(ttlMillis = 2 * 60 * 60 * 1000)
-    private val discoverCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 60 * 60 * 1000)
+    // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
+    // 3-4 ekrana") - keš sad drži CEO GenreDiscoverPage (filmovi + total_pages), ne samo listu
+    // filmova, videti getMoviesByGenresWithTotalPages ispod za obrazloženje.
+    private val discoverCache = TtlCache<String, GenreDiscoverPage>(ttlMillis = 60 * 60 * 1000)
 
     private val client = HttpClient(CIO) {
         install(ContentEncoding) {
@@ -221,8 +224,22 @@ class TmdbService(private val apiKey: String) {
      * bio previše uzak i vraćao je uglavnom filmove koji spadaju u sve žanrove odjednom. Pipe "|" je
      * ispravan operator za "bilo koji od ovih žanrova".
      */
-    suspend fun getMoviesByGenres(genreIds: List<Int>, page: Int = 1): List<TmdbMovieMatch> {
-        if (genreIds.isEmpty()) return emptyList()
+    suspend fun getMoviesByGenres(genreIds: List<Int>, page: Int = 1): List<TmdbMovieMatch> =
+        getMoviesByGenresWithTotalPages(genreIds, page).movies
+
+    /**
+     * Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
+     * 3-4 ekrana, za druge nikad") - koren problema NIJE bio ovde nego na Android strani
+     * (MovieNightViewModel je rotirao kroz FIKSNIH 5 stranica bez obzira na to koliko stranica
+     * TMDB stvarno ima za dati par žanrova - videti napomenu tamo). Ova funkcija sad vraća i
+     * `total_pages` iz TMDB odgovora (ranije se parsiralo samo `results`), da Android strana zna
+     * PRAVI broj raspoloživih stranica po paru žanrova umesto izmišljenog fiksnog broja - širok
+     * presek žanrova (npr. Action|Comedy|Drama) ima stotine stranica, uzak presek (npr.
+     * Documentary|War) možda samo par - otud utisak da se "nasumično" ponaša različito po
+     * prijatelju, iako je uzrok bio potpuno determinisan (samo pogrešno pretpostavljen).
+     */
+    suspend fun getMoviesByGenresWithTotalPages(genreIds: List<Int>, page: Int = 1): GenreDiscoverPage {
+        if (genreIds.isEmpty()) return GenreDiscoverPage(emptyList(), 0)
         val cacheKey = "${genreIds.sorted().joinToString(",")}|$page"
         discoverCache.get(cacheKey)?.let { return it }
 
@@ -241,7 +258,7 @@ class TmdbService(private val apiKey: String) {
             throw IllegalStateException("TMDB discover error: HTTP ${response.status.value}. ${unauthorizedHint(response.status)} Body=${bodyText.take(300)}")
         }
         val body: TmdbSearchResponse = response.body()
-        val result = body.results.map { r ->
+        val movies = body.results.map { r ->
             TmdbMovieMatch(
                 id = r.id,
                 title = r.title ?: r.originalTitle ?: "",
@@ -253,15 +270,25 @@ class TmdbService(private val apiKey: String) {
                 voteAverage = r.voteAverage
             )
         }
+        // TMDB kod praznih/vrlo uzanih upita zna da vrati total_pages=0 - coerceAtLeast(1) da
+        // "page < totalPages" niže (hasMore računanje) ne bude lažno false kad zapravo postoji
+        // makar ova jedna stranica koju smo upravo dobili.
+        val result = GenreDiscoverPage(movies, (body.totalPages ?: 1).coerceAtLeast(1))
         discoverCache.put(cacheKey, result)
         return result
     }
 }
 
+/** Jedna TMDB discover stranica po žanrovima + koliko UKUPNO stranica TMDB ima za taj upit - videti getMoviesByGenresWithTotalPages. */
+data class GenreDiscoverPage(val movies: List<TmdbMovieMatch>, val totalPages: Int)
+
 @Serializable
 private data class TmdbSearchResponse(
     val page: Int? = null,
-    val results: List<TmdbMovieDto> = emptyList()
+    val results: List<TmdbMovieDto> = emptyList(),
+    // Dorada (25. avgust 2026) - ranije se uopšte nije parsiralo, pa je Android strana morala da
+    // pogađa koliko stranica postoji (fiksnih 5) - videti getMoviesByGenresWithTotalPages.
+    @SerialName("total_pages") val totalPages: Int? = null
 )
 
 @Serializable

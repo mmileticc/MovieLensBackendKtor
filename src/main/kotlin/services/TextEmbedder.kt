@@ -50,7 +50,16 @@ class LocalTextEmbedder : TextEmbedder {
     override val label = "Lokalno (MiniLM)"
     override val key = "local"
 
-    private val model = AllMiniLmL6V2EmbeddingModel()
+    // Bugfix (25. avgust 2026, korisnička žalba "Render probao da hostuje i pukao na
+    // OutOfMemoryError") - RANIJE eager (`= AllMiniLmL6V2EmbeddingModel()`, učitava ceo ONNX model
+    // u memoriju ODMAH pri konstrukciji ovog objekta). `LocalTextEmbedder()` se konstruiše u
+    // Application.kt PRE nego što server stigne da osluškuje port - na hostu sa malo RAM-a (npr.
+    // Render free plan) ovo je bacalo OutOfMemoryError i rušilo ceo deploy, ne samo lokalnu
+    // pretragu. `by lazy` odlaže stvarno učitavanje modela do PRVOG poziva embed() - u kombinaciji
+    // sa ENABLE_LOCAL_EMBEDDING flag-om u Application.kt (koji sprečava da se refresh(), jedini
+    // automatski poziv koji bi ovo trigerovao, uopšte pozove na ograničenim hostovima), model se
+    // sad NIKAD ne učitava osim ako je neko eksplicitno zatražio `engine=local` pretragu.
+    private val model by lazy { AllMiniLmL6V2EmbeddingModel() }
 
     // ONNX inferenca je blokirajuća CPU operacija (ne suspendabilna sama po sebi) - Dispatchers.Default
     // (CPU-bound thread pool) je ispravan izbor, isti princip kao namenski sdkDispatcher u

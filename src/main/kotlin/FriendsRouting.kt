@@ -133,7 +133,15 @@ data class MovieSuggestionDto(
 )
 
 @Serializable
-data class MovieNightResponseDto(val suggestions: List<MovieSuggestionDto>)
+data class MovieNightResponseDto(
+    val suggestions: List<MovieSuggestionDto>,
+    // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
+    // 3-4 ekrana") - da li TMDB ima još stranica za ovaj par žanrova NAKON trenutne. Android strana
+    // (MovieNightViewModel) ranije nije imala ovu informaciju pa je rotirala kroz izmišljenih fiksnih
+    // 5 stranica - sad umesto toga sledi ovaj flag i vraća se na stranicu 1 tek kad je stvarno nema
+    // više šta novo da se ponudi.
+    @SerialName("has_more") val hasMore: Boolean = false
+)
 
 private fun LocalDateTime?.toEpochMillisOrNow(): Long {
     val localDateTime = this ?: Clock.System.now().toLocalDateTime(TimeZone.UTC)
@@ -316,7 +324,11 @@ fun Application.configureFriendsRouting(
                             .map { it.tmdbId }
                             .toSet()
 
-                        val suggestions = tmdbService.getMoviesByGenres(topGenreIds, page)
+                        // Dorada (25. avgust 2026) - koristi novu metodu koja i vraća total_pages
+                        // (videti TmdbService.getMoviesByGenresWithTotalPages), umesto stare
+                        // getMoviesByGenres koja je taj podatak tiho odbacivala.
+                        val discoverPage = tmdbService.getMoviesByGenresWithTotalPages(topGenreIds, page)
+                        val suggestions = discoverPage.movies
                             .filter { it.id != null && it.id.toLong() !in alreadySeen }
                             .take(10)
                             .map { movie ->
@@ -333,7 +345,7 @@ fun Application.configureFriendsRouting(
                                 )
                             }
 
-                        call.respond(MovieNightResponseDto(suggestions))
+                        call.respond(MovieNightResponseDto(suggestions, hasMore = page < discoverPage.totalPages))
                     }
 
                     post("/{friendId}") {
