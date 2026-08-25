@@ -169,8 +169,18 @@ fun Application.module() {
         ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
 
 
+    // Bugfix (25. avgust 2026, treći deo - korisnik potvrdio da NAMERNO drži SCRAPING_BOOLEAN=false
+    // na Render-u jer skreperi previše opterećuju free plan) - RANIJE su geminiCinemaSemanticIndex/
+    // localCinemaSemanticIndex.refresh() pozivi bili UGNJEŽDENI unutar configureScrapingLifecycle,
+    // pa se semantički indeksi NIKAD nisu punili kad je skrejpovanje isključeno, iako
+    // `scraped_movies` tabela (deljena Supabase baza) već ima sveže podatke upisane sa drugog hosta
+    // (korisnikov laptop, gde skrejpovanje stvarno radi). Sad su ta dva puta razdvojena: kad je
+    // skrejpovanje uključeno, indeksi se grade POSLE njega kao i pre; kad je isključeno, grade se
+    // ODMAH iz trenutnog stanja baze, bez pokretanja ijednog skrepera na ovom hostu.
     if (scrapingBoolean.lowercase() == "true") {
         configureScrapingLifecycle(tmdbService, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+    } else {
+        configureSemanticIndexRefresh(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
     configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
@@ -273,42 +283,74 @@ fun Application.configureScrapingLifecycle(
             // stanje `scraped_movies` tabele, bez obzira da li je ovaj proces stvarno pokrenuo novo
             // skrejpovanje ili ga je preskočio jer su podaci već od danas.
             //
-            // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
-            // svom try/catch bloku, da pad jednog (npr. Gemini API greška) ne spreči osvežavanje
-            // drugog (lokalni MiniLM nema mrežnu zavisnost pa je manje verovatno da padne).
-            try {
-                geminiCinemaSemanticIndex.refresh()
-            } catch (e: Exception) {
-                println("[ERROR] CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}")
-                e.printStackTrace()
-            }
-            // Bugfix (25. avgust 2026, korisnička žalba "Render probao da hostuje i pukao na
-            // OutOfMemoryError") - refresh() ovde poziva embedder.embedDocument() za svaki film, što
-            // je JEDINI automatski put koji bi trigerovao učitavanje ONNX MiniLM modela (sad `by
-            // lazy`, videti TextEmbedder.kt) pri startu servera. Na hostu sa malo RAM-a (npr. Render
-            // free plan, 512MB) to učitavanje samo je bacalo OutOfMemoryError - koji `catch
-            // (e: Exception)` ISPOD NE HVATA (OutOfMemoryError je Error, ne Exception), pa je rušio
-            // CEO proces, ne samo ovaj refresh. Podrazumevano isključeno - lokalni indeks ostaje
-            // prazan (isReady()==false), `engine=local` pretraga tiho vraća praznu listu umesto da
-            // sruši server. Eksplicitno postaviti ENABLE_LOCAL_EMBEDDING=true u Environment
-            // Variables (npr. lokalno ili na jačem hosting planu) da se ovo ipak puni.
-            val localEmbeddingEnabled = System.getenv("ENABLE_LOCAL_EMBEDDING")?.equals("true", ignoreCase = true) == true
-            if (localEmbeddingEnabled) {
-                try {
-                    localCinemaSemanticIndex.refresh()
-                } catch (e: Throwable) {
-                    // `Throwable` namerno (ne `Exception`) - baš OutOfMemoryError je razlog zašto
-                    // ovaj blok uopšte postoji, videti napomenu iznad.
-                    println("[ERROR] CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}")
-                    e.printStackTrace()
-                }
-            } else {
-                println("[LOG] ENABLE_LOCAL_EMBEDDING nije postavljen na 'true' - lokalni MiniLM indeks se ne puni (ostaje prazan, engine=local vraća praznu listu).")
-            }
+            refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
 
         } catch (e: Exception) {
             println("[ERROR] Greška tokom inicijalizacije podataka: ${e.localizedMessage}")
             e.printStackTrace()
         }
+    }
+}
+
+/**
+ * Bugfix (25. avgust 2026, treći deo) - puni semantičke indekse NEZAVISNO od skrejpovanja, za
+ * slučaj SCRAPING_BOOLEAN=false (npr. Render free plan, gde korisnik namerno drži skrepere
+ * isključene jer ih taj host ne izdrži). Čita TRENUTNO stanje `scraped_movies` tabele (deljena
+ * Supabase baza - skrejpovanje se radi na drugom hostu, npr. lokalno) i gradi oba indeksa od
+ * toga, bez pokretanja ijednog skrepera ovde. Poziva se samo jednom, pri startu - ako se
+ * `scraped_movies` tabela kasnije promeni (drugi host je skrejpovao novije podatke), indeks se
+ * neće sam osvežiti dok se ovaj proces ne restartuje (isti kompromis kao pre ove izmene, samo
+ * sad radi i kad je skrejpovanje ovde isključeno).
+ */
+fun Application.configureSemanticIndexRefresh(
+    geminiCinemaSemanticIndex: CinemaSemanticIndex,
+    localCinemaSemanticIndex: CinemaSemanticIndex
+) {
+    launch {
+        println("[LOG] SCRAPING_BOOLEAN nije 'true' - skrejpovanje se preskače na ovom hostu, ali semantički indeksi se i dalje pune iz postojećih podataka u bazi.")
+        refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+    }
+}
+
+/**
+ * Zajednička refresh logika za oba mesta odakle se poziva (configureScrapingLifecycle posle
+ * skrejpovanja, i configureSemanticIndexRefresh kad je skrejpovanje isključeno) - videti
+ * obrazloženje na oba poziv-mesta zašto su razdvojena u prvom redu.
+ */
+suspend fun refreshSemanticIndices(
+    geminiCinemaSemanticIndex: CinemaSemanticIndex,
+    localCinemaSemanticIndex: CinemaSemanticIndex
+) {
+    // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
+    // svom try/catch bloku, da pad jednog (npr. Gemini API greška) ne spreči osvežavanje
+    // drugog (lokalni MiniLM nema mrežnu zavisnost pa je manje verovatno da padne).
+    try {
+        geminiCinemaSemanticIndex.refresh()
+    } catch (e: Exception) {
+        println("[ERROR] CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}")
+        e.printStackTrace()
+    }
+    // Bugfix (25. avgust 2026, korisnička žalba "Render probao da hostuje i pukao na
+    // OutOfMemoryError") - refresh() ovde poziva embedder.embedDocument() za svaki film, što
+    // je JEDINI automatski put koji bi trigerovao učitavanje ONNX MiniLM modela (sad `by
+    // lazy`, videti TextEmbedder.kt) pri startu servera. Na hostu sa malo RAM-a (npr. Render
+    // free plan, 512MB) to učitavanje samo je bacalo OutOfMemoryError - koji `catch
+    // (e: Exception)` ISPOD NE HVATA (OutOfMemoryError je Error, ne Exception), pa je rušio
+    // CEO proces, ne samo ovaj refresh. Podrazumevano isključeno - lokalni indeks ostaje
+    // prazan (isReady()==false), `engine=local` pretraga tiho vraća praznu listu umesto da
+    // sruši server. Eksplicitno postaviti ENABLE_LOCAL_EMBEDDING=true u Environment
+    // Variables (npr. lokalno ili na jačem hosting planu) da se ovo ipak puni.
+    val localEmbeddingEnabled = System.getenv("ENABLE_LOCAL_EMBEDDING")?.equals("true", ignoreCase = true) == true
+    if (localEmbeddingEnabled) {
+        try {
+            localCinemaSemanticIndex.refresh()
+        } catch (e: Throwable) {
+            // `Throwable` namerno (ne `Exception`) - baš OutOfMemoryError je razlog zašto
+            // ovaj blok uopšte postoji, videti napomenu iznad.
+            println("[ERROR] CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}")
+            e.printStackTrace()
+        }
+    } else {
+        println("[LOG] ENABLE_LOCAL_EMBEDDING nije postavljen na 'true' - lokalni MiniLM indeks se ne puni (ostaje prazan, engine=local vraća praznu listu).")
     }
 }
