@@ -184,6 +184,32 @@ data class NowInCinemasMovieDto(
 @Serializable
 data class NowInCinemasResponseDto(val results: List<NowInCinemasMovieDto>)
 
+// E2.3 (2. septembar 2026) - stranica glumca. `character` je ovde (za razliku od CastMemberDto
+// gore koji opisuje glumca IZ UGLA jednog filma) uloga koju je glumac igrao u SVAKOM filmu iz
+// njegove filmografije - otud posebna, "obrnuta" DTO forma sa listom filmova umesto liste glumaca.
+@Serializable
+data class PersonMovieCreditDto(
+    val id: Int,
+    val title: String,
+    val character: String? = null,
+    @SerialName("poster_path") val posterPath: String? = null,
+    @SerialName("release_date") val releaseDate: String? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null
+)
+
+@Serializable
+data class PersonDetailDto(
+    val id: Int,
+    val name: String,
+    val biography: String? = null,
+    val birthday: String? = null,
+    val deathday: String? = null,
+    @SerialName("place_of_birth") val placeOfBirth: String? = null,
+    @SerialName("profile_path") val profilePath: String? = null,
+    @SerialName("known_for_department") val knownForDepartment: String? = null,
+    @SerialName("movie_credits") val movieCredits: List<PersonMovieCreditDto> = emptyList()
+)
+
 fun Application.configureMovieRouting(
     tmdbService: TmdbService,
     friendshipsRepository: FriendshipsRepository,
@@ -395,6 +421,45 @@ fun Application.configureMovieRouting(
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/$tmdbId: ${e.message}")
                     call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB detalji nisu uspeli"))
+                }
+            }
+        }
+
+        // E2.3 (2. septembar 2026) - stranica glumca. Javna ruta, isti obrazac kao
+        // /api/movies/{tmdbId} iznad (bez authenticate - pregled glumca ne zahteva prijavu).
+        route("/api/people") {
+            get("/{id}") {
+                val personId = call.parameters["id"]?.toIntOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan id"))
+                try {
+                    val person = tmdbService.getPersonDetails(personId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Glumac nije pronađen"))
+
+                    call.respond(
+                        PersonDetailDto(
+                            id = person.id,
+                            name = person.name,
+                            biography = person.biography,
+                            birthday = person.birthday,
+                            deathday = person.deathday,
+                            placeOfBirth = person.placeOfBirth,
+                            profilePath = person.profilePath,
+                            knownForDepartment = person.knownForDepartment,
+                            movieCredits = person.movieCredits.map {
+                                PersonMovieCreditDto(
+                                    id = it.tmdbId,
+                                    title = it.title,
+                                    character = it.character,
+                                    posterPath = it.posterPath,
+                                    releaseDate = it.releaseDate,
+                                    voteAverage = it.voteAverage
+                                )
+                            }
+                        )
+                    )
+                } catch (e: Exception) {
+                    println("[ERROR] /api/people/$personId: ${e.message}")
+                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB podaci o glumcu nisu uspeli"))
                 }
             }
         }

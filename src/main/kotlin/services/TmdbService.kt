@@ -32,6 +32,9 @@ class TmdbService(private val apiKey: String) {
     // sekciju 2 za odluku "proxy uživo bez baze, sa malim in-memory kešom".
     private val searchCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 10 * 60 * 1000)
     private val detailCache = TtlCache<Int, TmdbMovieDetail>(ttlMillis = 60 * 60 * 1000)
+    // Dorada (2. septembar 2026, E2.3 - stranica glumca) - biografija/filmografija se menjaju
+    // još ređe od detalja filma, isti dugi TTL kao detailCache je opravdan.
+    private val personCache = TtlCache<Int, TmdbPersonDetail>(ttlMillis = 60 * 60 * 1000)
     private val popularCache = TtlCache<Int, List<TmdbMovieMatch>>(ttlMillis = 2 * 60 * 60 * 1000)
     // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
     // 3-4 ekrana") - keš sad drži CEO GenreDiscoverPage (filmovi + total_pages), ne samo listu
@@ -177,6 +180,62 @@ class TmdbService(private val apiKey: String) {
             cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) }
         )
         detailCache.put(tmdbId, detail)
+        return detail
+    }
+
+    /**
+     * Detalji glumca/člana ekipe po TMDB person ID-ju (biografija, foto, filmografija) - E2.3
+     * (2. septembar 2026, stranica glumca). `append_to_response=movie_credits` u JEDNOM pozivu
+     * vraća i osnovne podatke i filmografiju (isti trik kao `credits` kod getMovieDetails) -
+     * nema potrebe za drugim pozivom ka /person/{id}/movie_credits. `language=en-US` iz istog
+     * razloga kao svuda drugde u ovom fajlu (app-wide konvencija, videti napomene iznad).
+     * Filmografija se sortira po popularnosti opadajuće - "najpoznatije uloge prve", isti
+     * princip kao TMDB-ov sopstveni "known for".
+     */
+    suspend fun getPersonDetails(personId: Int): TmdbPersonDetail? {
+        personCache.get(personId)?.let { return it }
+
+        val url = URLBuilder("https://api.themoviedb.org/3/person/$personId").apply {
+            parameters.append("append_to_response", "movie_credits")
+            parameters.append("language", "en-US")
+            if (!useV4Bearer) parameters.append("api_key", apiKey)
+        }.build()
+
+        val response: HttpResponse = getWithRetry(url)
+        if (response.status == HttpStatusCode.NotFound) return null
+        if (!response.status.isSuccess()) {
+            val bodyText = try { response.bodyAsText() } catch (_: Throwable) { "" }
+            throw IllegalStateException("TMDB person error: HTTP ${response.status.value}. ${unauthorizedHint(response.status)} Body=${bodyText.take(300)}")
+        }
+
+        val dto: TmdbPersonDetailDto = response.body()
+        val detail = TmdbPersonDetail(
+            id = dto.id,
+            name = dto.name ?: "",
+            biography = dto.biography?.takeIf { it.isNotBlank() },
+            birthday = dto.birthday,
+            deathday = dto.deathday,
+            placeOfBirth = dto.placeOfBirth,
+            profilePath = dto.profilePath,
+            knownForDepartment = dto.knownForDepartment,
+            movieCredits = dto.movieCredits?.cast.orEmpty()
+                // Ista uloga zna da se ponovi u TMDB odgovoru za specijalna izdanja istog filma
+                // (npr. "Extended Cut") - dedup po id-ju filma da glumčeva filmografija ne prikaže
+                // isti poster dvaput.
+                .distinctBy { it.id }
+                .sortedByDescending { it.popularity ?: 0.0 }
+                .map {
+                    TmdbPersonMovieCredit(
+                        tmdbId = it.id,
+                        title = it.title ?: it.originalTitle ?: "",
+                        character = it.character?.takeIf { c -> c.isNotBlank() },
+                        posterPath = it.posterPath,
+                        releaseDate = it.releaseDate,
+                        voteAverage = it.voteAverage
+                    )
+                }
+        )
+        personCache.put(personId, detail)
         return detail
     }
 
@@ -356,6 +415,55 @@ data class TmdbCastMember(
     val name: String,
     val character: String?,
     val profilePath: String?
+)
+
+@Serializable
+private data class TmdbPersonDetailDto(
+    val id: Int,
+    val name: String? = null,
+    val biography: String? = null,
+    val birthday: String? = null,
+    val deathday: String? = null,
+    @SerialName("place_of_birth") val placeOfBirth: String? = null,
+    @SerialName("profile_path") val profilePath: String? = null,
+    @SerialName("known_for_department") val knownForDepartment: String? = null,
+    @SerialName("movie_credits") val movieCredits: TmdbPersonMovieCreditsDto? = null
+)
+
+@Serializable
+private data class TmdbPersonMovieCreditsDto(val cast: List<TmdbPersonCastCreditDto> = emptyList())
+
+@Serializable
+private data class TmdbPersonCastCreditDto(
+    val id: Int,
+    val title: String? = null,
+    @SerialName("original_title") val originalTitle: String? = null,
+    val character: String? = null,
+    @SerialName("poster_path") val posterPath: String? = null,
+    @SerialName("release_date") val releaseDate: String? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null,
+    val popularity: Double? = null
+)
+
+data class TmdbPersonDetail(
+    val id: Int,
+    val name: String,
+    val biography: String?,
+    val birthday: String?,
+    val deathday: String?,
+    val placeOfBirth: String?,
+    val profilePath: String?,
+    val knownForDepartment: String?,
+    val movieCredits: List<TmdbPersonMovieCredit>
+)
+
+data class TmdbPersonMovieCredit(
+    val tmdbId: Int,
+    val title: String,
+    val character: String?,
+    val posterPath: String?,
+    val releaseDate: String?,
+    val voteAverage: Double?
 )
 
 data class TmdbMovieMatch(
