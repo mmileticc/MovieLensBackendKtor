@@ -137,6 +137,19 @@ class FriendshipsRepository {
             .map(::userFromRow)
     }
 
+    /**
+     * Odlazni (nerešeni) zahtevi koje je userId poslao - korisnički zahtev (2. septembar 2026,
+     * "da mi budu vidljivi izlistani poslati zahtevi, a ne samo da se otkrije kad ponovo
+     * pretražim osobu"). Simetrična ruta sa getPendingIncoming - isti join, samo obrnut smer
+     * (senderId eq userId umesto receiverId eq userId).
+     */
+    suspend fun getPendingOutgoing(userId: String): List<User> = dbQuery {
+        FriendshipsTable
+            .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.receiverId eq UsersTable.id })
+            .select { (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_PENDING) }
+            .map(::userFromRow)
+    }
+
     /** ID-jevi svih prihvaćenih prijatelja - koristi se za friend activity feed. */
     suspend fun getFriendIds(userId: String): List<String> = dbQuery {
         val asSender = FriendshipsTable.select {

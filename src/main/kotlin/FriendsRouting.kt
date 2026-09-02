@@ -231,6 +231,16 @@ fun Application.configureFriendsRouting(
                         call.respond(PendingRequestsResponseDto(pending))
                     }
 
+                    // Korisnički zahtev (2. septembar 2026) - poslati (odlazni) zahtevi, da budu
+                    // vidljivi izlistani kao i prijatelji, ne samo otkriveni ponovnom pretragom te
+                    // osobe. Simetrična ruta sa /pending.
+                    get("/pending/sent") {
+                        val userId = call.ownerUserIdOrNull()
+                            ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
+                        val sent = friendshipsRepository.getPendingOutgoing(userId).map { it.toPendingRequestDto() }
+                        call.respond(PendingRequestsResponseDto(sent))
+                    }
+
                     get("/activity") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
