@@ -103,6 +103,12 @@ data class FriendProfileMovieDto(
     @SerialName("watched_at") val watchedAt: Long
 )
 
+// Bugfix (E1.5, 2. septembar 2026, feedback testera - "nemogućnost pregleda profila pre slanja
+// zahteva") - RANIJE je ova ruta bezuslovno vraćala 403 dok status nije ACCEPTED. Sad se uvek
+// vraća profil, ali OGRANIČEN dok prijateljstvo nije prihvaćeno: `email`/`commonGenres` popunjeni,
+// `watchedMovies` PRAZNO (nikad se ne otkriva šta je neko gledao pre nego što postane prijatelj -
+// isto pravilo kao i za watchlist, koji se ne otkriva NIKAD, čak ni prijateljima).
+// `friendshipStatus` govori Android klijentu koji prikaz da renderuje (pun profil vs. preview).
 @Serializable
 data class FriendProfileResponseDto(
     val id: String,
@@ -110,7 +116,11 @@ data class FriendProfileResponseDto(
     @SerialName("avatar_url") val avatarUrl: String? = null,
     // Faza 7 redizajna - prijateljev "mini status" ispod imena, isto polje kao sopstveni profil.
     val bio: String? = null,
-    @SerialName("watched_movies") val watchedMovies: List<FriendProfileMovieDto>
+    @SerialName("watched_movies") val watchedMovies: List<FriendProfileMovieDto>,
+    // Sledeća tri polja - E1.5 dorada.
+    val email: String? = null,
+    @SerialName("friendship_status") val friendshipStatus: String = "ACCEPTED",
+    @SerialName("common_genres") val commonGenres: List<String> = emptyList()
 )
 
 // Movie Night predlozi (Faza 4, korak 2) - Android ugovor za ovo je postojao od ranije
@@ -245,23 +255,42 @@ fun Application.configureFriendsRouting(
                         call.respond(FriendActivityResponseDto(activity))
                     }
 
-                    // Profil prijatelja - dozvoljeno za sebe ili za ACCEPTED prijatelja, inače 403.
-                    // Nikad ne vraća watchlist (samo WATCHED - isto pravilo kao activity feed).
+                    // Profil prijatelja - pun profil (sa WATCHED listom, nikad watchlist-om) za sebe
+                    // ili ACCEPTED prijatelja. E1.5 dorada (2. septembar 2026) - za bilo koji drugi
+                    // status (NONE/PENDING_SENT/PENDING_RECEIVED) više NE vraća 403, nego OGRANIČEN
+                    // preview (slika/ime/email/opis/presek žanrova, BEZ liste odgledanih filmova) -
+                    // omogućava pregled pre slanja/prihvatanja zahteva za prijateljstvo.
                     get("/{friendId}/profile") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
                         val friendId = call.parameters["friendId"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nedostaje friendId"))
 
-                        if (friendId != userId) {
-                            val status = friendshipsRepository.getFriendshipStatus(userId, friendId)
-                            if (status != FriendshipStatus.ACCEPTED) {
-                                return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Možeš videti samo profile svojih prijatelja"))
-                            }
-                        }
-
                         val friendUser = userDao.findById(friendId)
                             ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Korisnik nije pronađen"))
+
+                        val status = if (friendId == userId) FriendshipStatus.ACCEPTED else friendshipsRepository.getFriendshipStatus(userId, friendId)
+
+                        if (status != FriendshipStatus.ACCEPTED) {
+                            // Ograničen preview - presek žanrovskih interesovanja (isti
+                            // compareTasteProfiles helper kao /friends lista), bez otkrivanja
+                            // ičega o gledanim filmovima.
+                            val selfProfile = tasteProfileRepository.getTasteProfile(userId)
+                            val friendProfile = tasteProfileRepository.getTasteProfile(friendId)
+                            val match = compareTasteProfiles(selfProfile, friendProfile)
+                            return@get call.respond(
+                                FriendProfileResponseDto(
+                                    id = friendUser.id,
+                                    username = friendUser.username ?: "Korisnik",
+                                    avatarUrl = friendUser.avatarUrl,
+                                    bio = friendUser.bio,
+                                    watchedMovies = emptyList(),
+                                    email = friendUser.email,
+                                    friendshipStatus = status.name,
+                                    commonGenres = match.commonGenres
+                                )
+                            )
+                        }
 
                         val watchedMovies = userActionsRepository.getHistory(friendId).map { row ->
                             FriendProfileMovieDto(
@@ -280,7 +309,9 @@ fun Application.configureFriendsRouting(
                                 username = friendUser.username ?: "Korisnik",
                                 avatarUrl = friendUser.avatarUrl,
                                 bio = friendUser.bio,
-                                watchedMovies = watchedMovies
+                                watchedMovies = watchedMovies,
+                                email = friendUser.email,
+                                friendshipStatus = status.name
                             )
                         )
                     }

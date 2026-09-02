@@ -286,11 +286,24 @@ fun Application.configureUserActionsRouting(
                             ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
                         val req = call.receive<UpdateHistoryRequest>()
 
-                        // PUT ažurira samo postojeći "odgledano" red - ako ne postoji, korisnik prvo
-                        // treba da odradi POST /history (markWatched ga ionako kreira ako fali,
-                        // ali vraćamo 404 da bi ponašanje ostalo predvidljivo za klijenta).
+                        // Bugfix (E1.1, 2. septembar 2026, feedback testera - "Update history failed: 404"
+                        // pri izmeni ocene) - RANIJE je PUT vraćao 404 ako red ne postoji, oslanjajući se
+                        // na to da je klijent UVEK prvo odradio POST /history. U praksi se lokalni
+                        // (Room/uiState) i stvarni backend zapis znaju raspetljati - npr. keš na Movie
+                        // Detail ekranu misli da je film već označen odgledanim (iz nekog ranijeg,
+                        // možda neuspešnog POST-a, ili posle brisanja na drugom ekranu), pa
+                        // MovieDetailViewModel.rateMovie šalje PUT umesto POST - i taj PUT je pucao. Sad
+                        // je PUT samoisceljujući: ako red ne postoji, ponaša se kao POST (uključujući
+                        // ensureCached, isto što POST grana radi) umesto da vrati grešku - "update" i
+                        // "create" postaju efektivno isti idempotentni upsert iz klijentove perspektive.
                         val existing = userActionsRepository.getHistoryItem(userId, tmdbId)
-                            ?: return@put call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije u istoriji"))
+                        if (existing == null) {
+                            try {
+                                moviesRepository.ensureCached(tmdbId.toInt(), tmdbService)
+                            } catch (e: IllegalArgumentException) {
+                                return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Nevalidan film"))
+                            }
+                        }
 
                         userActionsRepository.markWatched(
                             userId,
@@ -298,7 +311,8 @@ fun Application.configureUserActionsRouting(
                             req.rating.toRatingIntOrNull(),
                             req.review?.trim()?.take(REVIEW_MAX_LENGTH)
                         )
-                        val updated = userActionsRepository.getHistoryItem(userId, tmdbId) ?: existing
+                        val updated = userActionsRepository.getHistoryItem(userId, tmdbId)
+                            ?: return@put call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Neočekivana greška pri čuvanju"))
                         call.respond(updated.toHistoryDto())
                     }
 
