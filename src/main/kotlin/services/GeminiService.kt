@@ -23,6 +23,30 @@ import kotlinx.coroutines.withContext
 import java.util.Base64
 import java.util.concurrent.Executors
 
+/**
+ * Bugfix (2. septembar 2026, korisnički izveštaj - "pukla mi je greška za Gemini preopterećenost,
+ * mislim da to nismo obradili") - RANIJE su sve greške iz Gemini SDK/REST poziva (vision detekcija
+ * I embedding za semantičku pretragu) bacane kao generički `IllegalStateException("Gemini SDK
+ * error: ${e.message}")` - taj SIROV tekst (npr. "503 UNAVAILABLE. {\"error\":{\"message\":\"The
+ * model is overloaded...\"}}") se onda provlačio sve do Android klijenta i prikazivao korisniku
+ * direktno, bez ikakvog prevoda. Ovaj tip omogućava rutama (Routing.kt/MovieRouting.kt) da ga
+ * uhvate POSEBNO i vrate čist HTTP 503 (umesto 502/500) - Android strana onda taj status kod
+ * prepoznaje i prikazuje smislenu, actionable poruku (videti VisionRepository.kt).
+ */
+class GeminiOverloadedException(message: String) : Exception(message)
+
+/**
+ * Prepoznaje tipične signale da je Gemini API privremeno preopterećen ili da je pogođen rate
+ * limit, na osnovu teksta greške koju SDK/REST poziv vrati (Gemini ne vraća strukturisan error
+ * kod kroz `com.google.genai` SDK verziju koju projekat koristi - videti napomenu uz `restClient`
+ * niže - pa se oslanjamo na poznate fraze/kodove u tekstu poruke).
+ */
+private fun isGeminiOverloadSignal(message: String?): Boolean {
+    val text = message.orEmpty()
+    return listOf("overloaded", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "rate limit", " 429", " 503")
+        .any { text.contains(it, ignoreCase = true) }
+}
+
 class GeminiService(private val apiKey: String) {
 
     // Koristimo namenski thread za blokirajuće SDK pozive da ne bismo gušili Ktor
@@ -112,6 +136,9 @@ class GeminiService(private val apiKey: String) {
                     if (!t.isNullOrEmpty()) sb.append(t)
                 }
         } catch (e: Exception) {
+            if (isGeminiOverloadSignal(e.message)) {
+                throw GeminiOverloadedException("Gemini je trenutno preopterećen: ${e.message}")
+            }
             throw IllegalStateException("Gemini SDK error: ${e.message}", e)
         }
 
@@ -151,6 +178,9 @@ class GeminiService(private val apiKey: String) {
                 setBody(requestBody)
             }.body<EmbedContentResponseDto>()
         } catch (e: Exception) {
+            if (isGeminiOverloadSignal(e.message)) {
+                throw GeminiOverloadedException("Gemini je trenutno preopterećen: ${e.message}")
+            }
             throw IllegalStateException("Gemini embedding greška: ${e.message}", e)
         }
 

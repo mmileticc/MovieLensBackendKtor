@@ -10,6 +10,7 @@ import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.UserDao
 import com.milinko.db.UserDto
 import com.milinko.scraping.model.ScrapedMovie
+import com.milinko.services.GeminiOverloadedException
 import com.milinko.services.GeminiService
 import com.milinko.services.MovieCandidate
 import com.milinko.services.TmdbService
@@ -232,6 +233,14 @@ fun Application.configureRouting(
                     println("[LOG] /chat/vision total=${System.currentTimeMillis() - t0}ms")
                     call.respond(payload)
 
+                } catch (e: GeminiOverloadedException) {
+                    // Bugfix (2. septembar 2026, korisnički izveštaj - "pukla mi je greška za
+                    // Gemini preopterećenost") - RANIJE se ovo hvatalo u granu ispod (IllegalStateException)
+                    // i vraćalo 502 sa SIROVIM SDK tekstom greške direktno korisniku. Sad poseban
+                    // status (503) - Android strana (VisionRepository.kt) ga prepoznaje i prikazuje
+                    // smislenu, actionable poruku umesto tehničkog teksta.
+                    println("[ERROR] Gemini overloaded: ${e.message}")
+                    call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: IllegalStateException) {
                     println("[ERROR] Upstream failure: ${e.message}")
                     call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Upstream error"))

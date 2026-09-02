@@ -6,6 +6,7 @@ import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.CinemaSemanticIndex
+import com.milinko.services.GeminiOverloadedException
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
 import io.ktor.http.*
@@ -333,6 +334,11 @@ fun Application.configureMovieRouting(
                             }
                         )
                     )
+                } catch (e: GeminiOverloadedException) {
+                    // Bugfix (2. septembar 2026) - videti napomenu uz isti catch u Routing.kt
+                    // (/chat/vision) - isti problem, isti fix, samo za semantičku pretragu.
+                    println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
+                    call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/now-in-cinemas/semantic-search: ${e.message}")
                     call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Semantička pretraga nije uspela"))
