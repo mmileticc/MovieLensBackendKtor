@@ -177,7 +177,10 @@ class TmdbService(private val apiKey: String) {
             popularity = dto.popularity,
             runtime = dto.runtime,
             genres = dto.genres.map { TmdbGenre(it.id, it.name) },
-            cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) }
+            cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) },
+            // imdb_id dolazi već u osnovnom /movie/{id} odgovoru, bez append_to_response - koristi
+            // se za dopunske IMDb/Rotten Tomatoes ocene preko OmdbService (videti MovieRouting.kt).
+            imdbId = dto.imdbId?.takeIf { it.isNotBlank() }
         )
         detailCache.put(tmdbId, detail)
         return detail
@@ -374,7 +377,8 @@ private data class TmdbMovieDetailDto(
     val popularity: Double? = null,
     val runtime: Int? = null,
     val genres: List<TmdbGenreDto> = emptyList(),
-    val credits: TmdbCreditsDto? = null
+    val credits: TmdbCreditsDto? = null,
+    @SerialName("imdb_id") val imdbId: String? = null
 )
 
 @Serializable
@@ -402,7 +406,8 @@ data class TmdbMovieDetail(
     val popularity: Double? = null,
     val runtime: Int?,
     val genres: List<TmdbGenre>,
-    val cast: List<TmdbCastMember>
+    val cast: List<TmdbCastMember>,
+    val imdbId: String? = null
 )
 
 // @Serializable (ne samo data class) - genres se čuvaju kao JSON string u movies.genres koloni

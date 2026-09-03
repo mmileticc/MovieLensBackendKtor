@@ -24,6 +24,7 @@ import com.milinko.services.CinemaSemanticIndex
 import com.milinko.services.GeminiService
 import com.milinko.services.GeminiTextEmbedder
 import com.milinko.services.LocalTextEmbedder
+import com.milinko.services.OmdbService
 import com.milinko.services.TmdbService
 import com.milinko.services.enrichWithTmdbIds
 import io.ktor.http.*
@@ -152,8 +153,16 @@ fun Application.module() {
         ?: environment.config.propertyOrNull("ktor.tmdb.apiKey")?.getString()
         ?: throw IllegalStateException("TMDB_API_KEY nije postavljen (ENV) niti u application.yaml pod 'ktor.tmdb.apiKey'.")
 
+    // Dopunske IMDb/Rotten Tomatoes ocene (3. septembar 2026) - NAMERNO opciono, za razliku od
+    // Gemini/TMDB ključeva iznad. Besplatan OMDb ključ (omdbapi.com/apikey.aspx) - ako nije
+    // postavljen, OmdbService.getRatings uvek vraća null i Movie Detail radi normalno, samo bez
+    // ove dve dodatne ocene.
+    val omdbKey = System.getenv("OMDB_API_KEY")
+        ?: environment.config.propertyOrNull("ktor.omdb.apiKey")?.getString()
+
     val geminiService = GeminiService(apiKey = apiKey)
     val tmdbService = TmdbService(apiKey = tmdbKey)
+    val omdbService = OmdbService(apiKey = omdbKey)
     warmUpTmdbClient(tmdbService)
     // Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
     // lokalno") - DVA odvojena indeksa, po jedan za svaki TextEmbedder (Gemini REST poziv naspram
@@ -184,7 +193,7 @@ fun Application.module() {
         configureSemanticIndexRefresh(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     }
     configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
-    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex, omdbService)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
     // E2.2 dorada (3. septembar 2026) - javni komentari na film, videti CommentsRouting.kt.

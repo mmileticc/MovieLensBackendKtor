@@ -7,6 +7,7 @@ import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.CinemaSemanticIndex
 import com.milinko.services.GeminiOverloadedException
+import com.milinko.services.OmdbService
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
 import io.ktor.http.*
@@ -81,7 +82,11 @@ data class MovieDetailDto(
     val runtime: Int = 0,
     val genres: List<GenreDto> = emptyList(),
     val cast: List<CastMemberDto> = emptyList(),
-    val showtimes: List<CinemaShowtimeDto> = emptyList()
+    val showtimes: List<CinemaShowtimeDto> = emptyList(),
+    // Dopunske ocene sa OMDb-a (3. septembar 2026) - null ako OMDB_API_KEY nije podešen na
+    // serveru, film nema imdb_id, ili OMDb nema podatke za dati film (videti OmdbService).
+    @SerialName("imdb_rating") val imdbRating: Double? = null,
+    @SerialName("rotten_tomatoes") val rottenTomatoes: String? = null
 )
 
 /** Haversine formula - distanca u km između dve geo-tačke (korisnik i bioskop). */
@@ -217,7 +222,8 @@ fun Application.configureMovieRouting(
     tasteProfileRepository: TasteProfileRepository,
     scrapedMoviesRepository: ScrapedMoviesRepository,
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
-    localCinemaSemanticIndex: CinemaSemanticIndex
+    localCinemaSemanticIndex: CinemaSemanticIndex,
+    omdbService: OmdbService
 ) {
     routing {
         route("/api/movies") {
@@ -403,6 +409,15 @@ fun Application.configureMovieRouting(
                         showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
                     }
 
+                    // Dopunske ocene (IMDb/Rotten Tomatoes) - odvojen poziv od TMDB detalja, ne
+                    // sme oboriti ostatak odgovora ako OMDb padne (videti OmdbService.getRatings).
+                    val omdbRatings = try {
+                        omdbService.getRatings(detail.imdbId)
+                    } catch (e: Exception) {
+                        println("[WARN] OMDb obogaćivanje nije uspelo za tmdbId=$tmdbId: ${e.message}")
+                        null
+                    }
+
                     call.respond(
                         MovieDetailDto(
                             id = detail.id,
@@ -415,7 +430,9 @@ fun Application.configureMovieRouting(
                             runtime = detail.runtime ?: 0,
                             genres = detail.genres.map { GenreDto(it.id, it.name) },
                             cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) },
-                            showtimes = showtimes
+                            showtimes = showtimes,
+                            imdbRating = omdbRatings?.imdbRating,
+                            rottenTomatoes = omdbRatings?.rottenTomatoesPercent
                         )
                     )
                 } catch (e: Exception) {
