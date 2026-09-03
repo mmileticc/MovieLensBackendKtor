@@ -2,6 +2,7 @@ package com.milinko
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import com.milinko.db.CommentsRepository
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
 import com.milinko.db.FriendshipsRepository
@@ -186,6 +187,8 @@ fun Application.module() {
     configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
+    // E2.2 dorada (3. septembar 2026) - javni komentari na film, videti CommentsRouting.kt.
+    configureCommentsRouting(tmdbService, CommentsRepository(), MoviesRepository(), FriendshipsRepository(), userDao)
 }
 
 @kotlinx.serialization.Serializable

@@ -52,10 +52,14 @@ object DatabaseFactory {
                 NotificationsTable,
                 // Faza D dorada #2 (23. avgust 2026) - trajni keš embedding vektora, videti
                 // MovieEmbeddingsTable.kt za obrazloženje.
-                MovieEmbeddingsTable
+                MovieEmbeddingsTable,
+                // E2.2 dorada (3. septembar 2026) - javni komentari na film, videti
+                // CommentsTable.kt/CommentLikesTable.kt za obrazloženje.
+                CommentsTable,
+                CommentLikesTable
             )
         }
-        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings).")
+        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings, movie_comments, comment_likes).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)
