@@ -153,10 +153,6 @@ fun Application.module() {
         ?: environment.config.propertyOrNull("ktor.tmdb.apiKey")?.getString()
         ?: throw IllegalStateException("TMDB_API_KEY nije postavljen (ENV) niti u application.yaml pod 'ktor.tmdb.apiKey'.")
 
-    // Dopunske IMDb/Rotten Tomatoes ocene (3. septembar 2026) - NAMERNO opciono, za razliku od
-    // Gemini/TMDB ključeva iznad. Besplatan OMDb ključ (omdbapi.com/apikey.aspx) - ako nije
-    // postavljen, OmdbService.getRatings uvek vraća null i Movie Detail radi normalno, samo bez
-    // ove dve dodatne ocene.
     val omdbKey = System.getenv("OMDB_API_KEY")
         ?: environment.config.propertyOrNull("ktor.omdb.apiKey")?.getString()
 
@@ -164,13 +160,7 @@ fun Application.module() {
     val tmdbService = TmdbService(apiKey = tmdbKey)
     val omdbService = OmdbService(apiKey = omdbKey)
     warmUpTmdbClient(tmdbService)
-    // Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
-    // lokalno") - DVA odvojena indeksa, po jedan za svaki TextEmbedder (Gemini REST poziv naspram
-    // lokalnog MiniLM-a preko ONNX-a, videti TextEmbedder.kt) - korisnik bira preko `engine`
-    // parametra na ruti (Android switch) da uporedi ponašanje. Vektori različitih embedder-a nisu
-    // međusobno uporedivi, pa svaki indeks mora imati SVOJ embedder.
-    // Faza D dorada #2 (23. avgust 2026) - jedan deljen repository, videti obrazloženje na
-    // CinemaSemanticIndex konstruktoru (razdvajanje po embedder.key se dešava unutar repository-ja).
+
     val movieEmbeddingsRepository = MovieEmbeddingsRepository()
     val geminiCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, GeminiTextEmbedder(geminiService), movieEmbeddingsRepository)
     val localCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, LocalTextEmbedder(), movieEmbeddingsRepository)
@@ -179,14 +169,6 @@ fun Application.module() {
         ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
 
 
-    // Bugfix (25. avgust 2026, treći deo - korisnik potvrdio da NAMERNO drži SCRAPING_BOOLEAN=false
-    // na Render-u jer skreperi previše opterećuju free plan) - RANIJE su geminiCinemaSemanticIndex/
-    // localCinemaSemanticIndex.refresh() pozivi bili UGNJEŽDENI unutar configureScrapingLifecycle,
-    // pa se semantički indeksi NIKAD nisu punili kad je skrejpovanje isključeno, iako
-    // `scraped_movies` tabela (deljena Supabase baza) već ima sveže podatke upisane sa drugog hosta
-    // (korisnikov laptop, gde skrejpovanje stvarno radi). Sad su ta dva puta razdvojena: kad je
-    // skrejpovanje uključeno, indeksi se grade POSLE njega kao i pre; kad je isključeno, grade se
-    // ODMAH iz trenutnog stanja baze, bez pokretanja ijednog skrepera na ovom hostu.
     if (scrapingBoolean.lowercase() == "true") {
         configureScrapingLifecycle(tmdbService, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     } else {
@@ -196,7 +178,6 @@ fun Application.module() {
     configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex, omdbService)
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
-    // E2.2 dorada (3. septembar 2026) - javni komentari na film, videti CommentsRouting.kt.
     configureCommentsRouting(tmdbService, CommentsRepository(), MoviesRepository(), FriendshipsRepository(), userDao)
 }
 
@@ -234,10 +215,6 @@ fun Application.configureScrapingLifecycle(
         try {
             println("[REPREZENTACIJA] Provera stanja i svežine baze podataka...")
 
-            // VAŽNO: eksplicitno CINEMA_ZONE_ID (Europe/Belgrade), ne LocalDate.now() (JVM lokalna
-            // zona - može biti UTC na Render-u, Belgrade lokalno itd.) i ne UTC (dan bi se "prevrnuo"
-            // 1-2h kasnije nego što je stvarno ponoć u Beogradu). getLatestScrapeDate() konvertuje
-            // UTC-stored created_at u istu zonu pre poređenja - videti komentar tamo.
             val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
             val datumPoslednjegSkrapovanja = repository.getLatestScrapeDate()
 
@@ -290,11 +267,6 @@ fun Application.configureScrapingLifecycle(
                 println("[LOG] Učitano ${filmoviIzBaze.size} filmova direktno iz Supabase-a za rad aplikacije.")
             }
 
-            // Faza D (17. avgust 2026) - indeks za semantičku pretragu se gradi OVDE, posle oba
-            // grane gore (i sveže skrejpovano i već sveže iz baze) - uvek treba da odražava trenutno
-            // stanje `scraped_movies` tabele, bez obzira da li je ovaj proces stvarno pokrenuo novo
-            // skrejpovanje ili ga je preskočio jer su podaci već od danas.
-            //
             refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
 
         } catch (e: Exception) {
@@ -333,7 +305,7 @@ suspend fun refreshSemanticIndices(
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
-    // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
+    // dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
     // svom try/catch bloku, da pad jednog (npr. Gemini API greška) ne spreči osvežavanje
     // drugog (lokalni MiniLM nema mrežnu zavisnost pa je manje verovatno da padne).
     try {
@@ -342,16 +314,7 @@ suspend fun refreshSemanticIndices(
         println("[ERROR] CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}")
         e.printStackTrace()
     }
-    // Bugfix (25. avgust 2026, korisnička žalba "Render probao da hostuje i pukao na
-    // OutOfMemoryError") - refresh() ovde poziva embedder.embedDocument() za svaki film, što
-    // je JEDINI automatski put koji bi trigerovao učitavanje ONNX MiniLM modela (sad `by
-    // lazy`, videti TextEmbedder.kt) pri startu servera. Na hostu sa malo RAM-a (npr. Render
-    // free plan, 512MB) to učitavanje samo je bacalo OutOfMemoryError - koji `catch
-    // (e: Exception)` ISPOD NE HVATA (OutOfMemoryError je Error, ne Exception), pa je rušio
-    // CEO proces, ne samo ovaj refresh. Podrazumevano isključeno - lokalni indeks ostaje
-    // prazan (isReady()==false), `engine=local` pretraga tiho vraća praznu listu umesto da
-    // sruši server. Eksplicitno postaviti ENABLE_LOCAL_EMBEDDING=true u Environment
-    // Variables (npr. lokalno ili na jačem hosting planu) da se ovo ipak puni.
+
     val localEmbeddingEnabled = System.getenv("ENABLE_LOCAL_EMBEDDING")?.equals("true", ignoreCase = true) == true
     if (localEmbeddingEnabled) {
         try {

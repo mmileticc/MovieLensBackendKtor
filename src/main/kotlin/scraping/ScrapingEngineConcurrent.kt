@@ -19,14 +19,7 @@ class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
                 println("\n[Engine] Pokrećem paralelnu nit za: ${scraper.cinemaName}")
                 val startTimeScraper = System.currentTimeMillis()
 
-                // VAŽNO (izolacija grešaka): svaki scraper.scrape() poziv je ovde obavijen sopstvenim
-                // try/catch-om. RANIJE ovo nije bio slučaj - pojedinačni scraperi imaju try/catch
-                // OKO svojih sekcija (repertoar/uskoro), ali ne i oko same inicijalizacije Playwright
-                // browsera (launch/newContext/newPage). Da je ijedan od tih poziva bacio izuzetak
-                // (npr. browser se ne pokrene, resurs se iscrpi), taj izuzetak bi propagirao kroz
-                // ovaj async blok i coroutineScope bi otkazao SVE ostale paralelne scrapere - jedan
-                // pokvaren bioskop bi tako mogao da obori celo noćno skrapovanje, ne samo sebe.
-                // Sad se svaka greška lokalizuje na svoj scraper, ostali nastavljaju normalno.
+
                 val rezultati = try {
                     scraper.scrape(date)
                 } catch (e: Exception) {
@@ -37,25 +30,17 @@ class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
                 val duration = (System.currentTimeMillis() - startTimeScraper) / 1000
                 println("[Engine] Završio ${scraper.cinemaName} za $duration sekundi. Nađeno: ${rezultati.size}")
 
-                // Vraćamo listu iz async bloka
                 rezultati
             }
         }
 
-        // 2. ČEKANJE I BEZBEDNO SPAJANJE (Konkurentnost rešena na jeziku samog algoritma)
-        // .awaitAll() blokira trenutnu korutinu dok svi scraperi ne završe.
-        // Dobijamo listu listi: List<List<ScrapedMovie>>
+
         val sveListe: List<List<ScrapedMovie>> = poslovi.awaitAll()
 
-        // .flatten() spaja sve pojedinačne liste u jednu veliku ravnu listu.
-        // Pošto se ovo dešava sekvencijalno NAKON što su sve niti završile,
-        // nema nikakve šanse za race condition ili threading greške!
+        // .flatten() spaja sve pojedinačne liste u jednu veliku ravnu listu
         val finalniFilmovi = sveListe.flatten()
         val ukupnoVreme = (System.currentTimeMillis() - startTimeEngine) / 1000
-
-//        finalniFilmovi.forEach { film ->
-//            println("[FILM] [${if (film.isUpcoming) "UPCOMING" else "ACTIVE"}] ${film.title} (${film.originalTitle ?: "Nema originalnog"}) Lokacija ${film.cinemaLocation} -> ${film.bookingUrl}")
-//        }
+        
 
         println("\n=== SVI BIOSKOPI SU USPEŠNO PARALELNO PROCESUIRANI ===")
         println("Ukupno skupljeno filmova za bazu: ${finalniFilmovi.size}")

@@ -2,7 +2,6 @@ package com.milinko.scraping.scraper
 
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.model.ScrapedMovie
-import com.milinko.scraping.util.dumpScraperDebugArtifacts
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.io.IOException
@@ -35,11 +34,6 @@ class TuckwoodCineplexScraper : CinemaScraper {
 
     private val mojUserAgent = MOVIE_LENS_USER_AGENT
 
-    // tuck.rs je primetno sporiji server od ostalih skrapovanih sajtova (uživo potvrđeno preko
-    // ponavljanih "Read timed out" grešaka čak i sa 10s timeout-om, koji je dovoljan za Arenu/
-    // Rodu) - podignuto na 25s podrazumevano, uz mogućnost override-a preko env varijable za
-    // slučaj da ni to ne bude dovoljno bez potrebe da se ponovo menja kod. Isti obrazac kao
-    // PLAYWRIGHT_DEEP_TIMEOUT_MS u CineGrandScraper-u.
     private val timeoutMs = (System.getenv("TUCKWOOD_TIMEOUT_MS")?.toIntOrNull() ?: 25000)
 
     override fun scrape(date: LocalDate): List<ScrapedMovie> {
@@ -55,7 +49,6 @@ class TuckwoodCineplexScraper : CinemaScraper {
             val filmoviSaRepertoara = parseMoviesFromDoc(docRepertoar, isUpcoming = false)
             if (filmoviSaRepertoara.isEmpty()) {
                 println("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
-                dumpScraperDebugArtifacts(docRepertoar.outerHtml(), cinemaName, "repertoar-prazno")
             }
             tekuciFilmovi.addAll(filmoviSaRepertoara)
         }
@@ -122,11 +115,6 @@ class TuckwoodCineplexScraper : CinemaScraper {
 
             if (naslovPun.isEmpty() || link.isEmpty()) continue
 
-            // Naslov je "Srpski naslov / Originalni naslov". NAMERNO delimo na POSLEDNJI " / ", ne
-            // prvi - primećeno uživo (test od 15. avgusta) da srpski deo ume i SAM da sadrži " / "
-            // (npr. "Angry Birds Film 3 (sinhro. / titlovan) / The Angry Birds Movie 3" - dve
-            // audio-verzije istog filma), pa bi deljenje na PRVI " / " odseklo naslov na pogrešnom
-            // mestu. Originalni (engleski) naslov je uvek poslednji deo, bez dodatnih kosih crta.
             val naslov = naslovPun.substringBeforeLast(" / ").trim()
             val originalniNaslov = naslovPun.substringAfterLast(" / ").trim()
                 .takeIf { it.isNotEmpty() && it != naslov }

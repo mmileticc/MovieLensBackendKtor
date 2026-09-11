@@ -9,7 +9,6 @@ import com.microsoft.playwright.options.LoadState
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.locations.LokacijeBioskopa
 import com.milinko.scraping.model.ScrapedMovie
-import com.milinko.scraping.util.dumpScraperDebugArtifacts
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
@@ -30,23 +29,13 @@ class CineGrandScraper : CinemaScraper {
         val tekuciFilmovi = mutableListOf<ScrapedMovie>()
         val upcomingFilmovi = mutableListOf<ScrapedMovie>()
 
-        // Sajt je u međuvremenu potpuno redizajniran (stari: Angular, "/repertoar?date=..." +
-        // "a.event-card"; novi: Nuxt, "/u-bioskopu" + "/uskoro" + "a.group.block") - otkriveno
-        // avgusta 2026. preko scraper-debug/ snimaka pošto je stari URL vraćao 404. Novi
-        // "/u-bioskopu" ne prima date parametar (probano uživo, nije bitno za našu svrhu - ne
-        // čuvamo tačne termine, samo koji film igra u kom bioskopu).
+
         val urlRepertoar = "$baseUrl/u-bioskopu"
         val urlUskoro = "$baseUrl/uskoro"
 
         println("[$cinemaName] Inicijalizacija Playwright drajvera...")
 
         Playwright.create().use { localPlaywright ->
-            // Ceo setup (launch/newContext/newPage) je sad obavijen svojim try/catch-om - ranije
-            // nije bio, pa bi npr. neuspešan browser.launch() (retko, ali moguće - iscrpljeni
-            // resursi, oštećena Chromium instalacija) bacio izuzetak koji se ovde ničim nije
-            // hvatao. Sa izolacijom na nivou ScrapingEngineConcurrent to više ne bi oborilo OSTALE
-            // scrapere, ali je i dalje korisno imati jasnu, prepoznatljivu poruku ovde - razlikuje
-            // "browser se uopšte nije pokrenuo" od "browser je radio, ali stranica/selektor nisu".
             try {
                 val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
                 val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
@@ -77,14 +66,10 @@ class CineGrandScraper : CinemaScraper {
                     println("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
                     // Snimamo tačno šta je browser video u trenutku pada - bez ovoga se sledeći put
                     // opet ne bi znalo da li je selektor promenjen, sajt blokirao bota, ili nešto treće.
-                    dumpScraperDebugArtifacts(page, cinemaName, "repertoar")
                 }
 
                 val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
 
-                // 2. SKRAPOVANJE SEKCIJE "USKORO" (/uskoro) - novi sajt ima punu, direktno
-                // navigabilnu rutu za ovo (stari Angular sajt je zahtevao simulaciju klika na
-                // navbar da bi SPA komponenta promenila prikaz - to više nije potrebno).
                 try {
                     println("[$cinemaName] [USKORO] Otvaram stranicu: $urlUskoro")
                     page.navigate(urlUskoro)
@@ -96,7 +81,6 @@ class CineGrandScraper : CinemaScraper {
                     )
                 } catch (e: Exception) {
                     println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
-                    dumpScraperDebugArtifacts(page, cinemaName, "uskoro")
                 } finally {
                     context.close()
                     browser.close()
@@ -135,9 +119,6 @@ class CineGrandScraper : CinemaScraper {
         vecSkrapovaniLinkovi: Set<String>
     ): List<ScrapedMovie> {
         val result = mutableListOf<ScrapedMovie>()
-        // Kartica filma na novom sajtu: <a href="/happenings/<slug>" class="group block">
-        // ...<h3>Naslov</h3></a> - "group"/"block" su Tailwind utility klase (hover efekat +
-        // layout), ne semantičko ime, ali su dosledne na obe liste (/u-bioskopu i /uskoro).
         val filmovi = doc.select("a.group.block")
         val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
 
@@ -222,16 +203,7 @@ class CineGrandScraper : CinemaScraper {
 
                 privremenaStranica.navigate(urlFilma)
                 privremenaStranica.waitForLoadState(LoadState.DOMCONTENTLOADED)
-
-                // REŠENJE ZA PROBLEM LOKACIJA (novi Nuxt sajt):
-                // 1. Prvo čekamo da se sigurno pojavi originalni naslov (".hf-original" - deo
-                // glavnog "hero" bloka na vrhu stranice filma, prisutan i za tekuće i za najavljene
-                // filmove) - to nam govori da se stranica stvarno otvorila.
                 privremenaStranica.waitForSelector(".hf-original", Page.WaitForSelectorOptions().setTimeout(10000.0))
-
-                // 2. Eksplicitno čekamo lokacije (".hp-raspon-cname") - postoje samo ako film ima
-                // bar jedan zakazan termin. Koristimo try-catch jer "Uskoro" filmovi bez zakazanog
-                // termina ih nemaju - ne želimo da srušimo skrapovanje ako baci TimeoutException.
                 try {
                     privremenaStranica.waitForSelector(".hp-raspon-cname", Page.WaitForSelectorOptions().setTimeout(3500.0))
                 } catch (e: Exception) {

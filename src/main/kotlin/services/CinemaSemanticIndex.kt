@@ -25,10 +25,6 @@ class CinemaSemanticIndex(
     // Svaka instanca ovog indeksa je vezana za TAČNO JEDAN embedder - vektori različitih embedder-a
     // imaju različitu dimenziju/prostor, ne mogu se mešati u istom indeksu.
     private val embedder: TextEmbedder,
-    // Faza D dorada #2 (23. avgust 2026, korisničko pitanje "zašto se ne bi odmah i embedovan
-    // rezultat čuvao... jer trenutno svaki restart potroši ~70 Gemini upita") - trajni keš u bazi,
-    // videti MovieEmbeddingsTable.kt. Deljen između obe instance (Gemini/lokalna) na poziv-nivou -
-    // razdvajanje po `embedder.key` se dešava UNUTAR repository poziva, ne treba dve instance.
     private val movieEmbeddingsRepository: MovieEmbeddingsRepository
 ) {
     data class Entry(
@@ -55,12 +51,6 @@ class CinemaSemanticIndex(
         val scraped = scrapedMoviesRepository.getAllScrapedMovies()
         val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
 
-        // Faza D dorada #2 - jedan upit učita SVE već izračunate vektore za OVAJ embedder (isti
-        // obrazac kao getAllScrapedMovies() iznad - bulk fetch pa filtriranje u memoriji, umesto
-        // upita po filmu). Za svaki film se hash trenutnog "${title}. $overview" poredi sa hash-om
-        // sačuvanim uz keširan vektor - ako se poklapaju, embedding se NE računa ponovo (ušteda
-        // Gemini poziva/lokalne inferencije na svaki restart). Ako se ne poklapaju (TMDB opis se
-        // promenio) ili film uopšte nije keširan, računa se i odmah upisuje nazad u bazu.
         val cached = movieEmbeddingsRepository.getEmbeddingsForEngine(embedder.key)
         var reusedCount = 0
 

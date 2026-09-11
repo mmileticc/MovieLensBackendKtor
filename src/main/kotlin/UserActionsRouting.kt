@@ -317,7 +317,6 @@ fun Application.configureUserActionsRouting(
                     }
 
                     // "Undo" za slučajan (lapsus) klik na "Označi kao odgledano" - briše i ocenu
-                    // pošto je u istom redu.
                     delete("/{tmdbId}") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))

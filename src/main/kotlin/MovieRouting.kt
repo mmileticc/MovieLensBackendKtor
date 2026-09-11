@@ -56,9 +56,6 @@ data class CastMemberDto(
     @SerialName("profile_path") val profilePath: String? = null
 )
 
-// Bioskopski termin za dati film (Movie Detail - "Bioskopski termini" sekcija). distanceKm je
-// null ako klijent nije poslao lat/lon (korisnik nije dao dozvolu za lokaciju) - u tom slučaju
-// lista nije sortirana po udaljenosti, samo u redosledu iz baze.
 @Serializable
 data class CinemaShowtimeDto(
     @SerialName("cinema_name") val cinemaName: String,
@@ -253,20 +250,7 @@ fun Application.configureMovieRouting(
             }
 
             get("/featured") {
-                // Faza 4 (MOVIELENS_ROADMAP.md): ako je userId prosleđen i korisnik ima dovoljno
-                // ocenjenih filmova da postoji taste profile, vraćamo TMDB discover po njegova 3
-                // najomiljenija žanra umesto generičkih popularnih filmova. Bez userId-a, praznog
-                // profila (nov korisnik), premalo ocena, ili ako discover ne vrati ništa - fallback
-                // na popularne, isto ponašanje kao ranije (nikad prazan ekran).
-                //
-                // Dorada kvaliteta predloga (16. avgust 2026, korisnička žalba "nekad gađa dobro, a
-                // nekad baš brlja"): (1) dodat MIN_RATINGS_FOR_PERSONALIZATION prag - sa 1-2 ocene
-                // profil je previše šumovit da bi mu se verovalo, bolje generički popularni dok
-                // korisnik ne oceni bar par filmova; (2) ranije se sva 3 top žanra tražila JEDNIM
-                // "OR" upitom sortiranim isključivo po globalnoj TMDB popularnosti - žanr koji
-                // korisnik "malo" voli i žanr koji "mnogo" voli dobijali su podjednak broj mesta u
-                // predlogu. Sad se svaki žanr traži POSEBNO i meša se srazmerno afinitetu (videti
-                // fetchBlendedByGenreAffinity ispod).
+
                 val userId = call.request.queryParameters["userId"]?.trim()?.takeIf { it.isNotBlank() }
                 val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
                 try {
@@ -280,9 +264,7 @@ fun Application.configureMovieRouting(
                             if (topGenres.isEmpty()) {
                                 null
                             } else {
-                                // Filmovi koje je korisnik već odgledao/ocenio su upravo ono što je
-                                // gurnulo ovaj žanr na vrh profila - bez ovog filtera bi se stalno
-                                // vraćali kao "predlog" isti filmovi koje je korisnik već video.
+
                                 val alreadyWatched = history.map { it.tmdbId }.toSet()
                                 fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
                                     .takeIf { it.isNotEmpty() }
@@ -300,8 +282,7 @@ fun Application.configureMovieRouting(
             get("/now-in-cinemas") {
                 try {
                     val scraped = scrapedMoviesRepository.getAllScrapedMovies()
-                    // Isti film se u repertoaru pojavljuje jednom po bioskopu/sali - grupišemo po
-                    // tmdbId (samo redovi koji su uspešno povezani sa TMDB-om tokom skrapovanja).
+
                     val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
 
                     val results = coroutineScope {
@@ -329,15 +310,7 @@ fun Application.configureMovieRouting(
                 }
             }
 
-            // Faza D (17. avgust 2026, predlog mentora Marka) - semantička pretraga, namerno
-            // svedena na filmove trenutno na repertoaru (videti CinemaSemanticIndex - obrazloženje
-            // obima). Ista NowInCinemasResponseDto forma kao /now-in-cinemas gore - Android klijent
-            // ne treba nov model, samo drugačiji izvor podataka.
-            //
-            // Faza D dorada (poređenje Gemini vs. lokalni MiniLM) - opcioni `engine` query parametar
-            // bira koji od dva paralelna indeksa se koristi. Podrazumevano "gemini" - postojeći
-            // Android klijent (pre ove dorade) ne šalje ovaj parametar, pa mora nastaviti da radi
-            // identično kao pre.
+
             get("/now-in-cinemas/semantic-search") {
                 val query = call.request.queryParameters["q"]?.trim().orEmpty()
                 if (query.isEmpty()) {
@@ -346,9 +319,6 @@ fun Application.configureMovieRouting(
                 val engine = call.request.queryParameters["engine"]?.trim()?.lowercase().orEmpty()
                 val index = if (engine == "local") localCinemaSemanticIndex else geminiCinemaSemanticIndex
                 if (!index.isReady()) {
-                    // Indeks se puni asinhrono pri startu servera (uz dnevno skrejpovanje) - ako
-                    // upit stigne pre nego što se prvi refresh završi, vraćamo praznu listu umesto
-                    // greške (klijent to prikazuje kao "nema rezultata", ne kao pad mreže).
                     return@get call.respond(NowInCinemasResponseDto(emptyList()))
                 }
                 try {
@@ -367,8 +337,7 @@ fun Application.configureMovieRouting(
                         )
                     )
                 } catch (e: GeminiOverloadedException) {
-                    // Bugfix (2. septembar 2026) - videti napomenu uz isti catch u Routing.kt
-                    // (/chat/vision) - isti problem, isti fix, samo za semantičku pretragu.
+
                     println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
                     call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: Exception) {
@@ -380,8 +349,7 @@ fun Application.configureMovieRouting(
             get("/{tmdbId}") {
                 val tmdbId = call.parameters["tmdbId"]?.toIntOrNull()
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
-                // Opciono - Android šalje samo ako je korisnik dao dozvolu za lokaciju. Kad su
-                // prisutni, bioskopi se sortiraju po udaljenosti; inače ostaju u redosledu iz baze.
+
                 val lat = call.request.queryParameters["lat"]?.toDoubleOrNull()
                 val lon = call.request.queryParameters["lon"]?.toDoubleOrNull()
                 try {

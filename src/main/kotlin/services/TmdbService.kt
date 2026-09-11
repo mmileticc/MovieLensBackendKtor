@@ -222,9 +222,6 @@ class TmdbService(private val apiKey: String) {
             profilePath = dto.profilePath,
             knownForDepartment = dto.knownForDepartment,
             movieCredits = dto.movieCredits?.cast.orEmpty()
-                // Ista uloga zna da se ponovi u TMDB odgovoru za specijalna izdanja istog filma
-                // (npr. "Extended Cut") - dedup po id-ju filma da glumčeva filmografija ne prikaže
-                // isti poster dvaput.
                 .distinctBy { it.id }
                 .sortedByDescending { it.popularity ?: 0.0 }
                 .map {
@@ -332,9 +329,6 @@ class TmdbService(private val apiKey: String) {
                 voteAverage = r.voteAverage
             )
         }
-        // TMDB kod praznih/vrlo uzanih upita zna da vrati total_pages=0 - coerceAtLeast(1) da
-        // "page < totalPages" niže (hasMore računanje) ne bude lažno false kad zapravo postoji
-        // makar ova jedna stranica koju smo upravo dobili.
         val result = GenreDiscoverPage(movies, (body.totalPages ?: 1).coerceAtLeast(1))
         discoverCache.put(cacheKey, result)
         return result

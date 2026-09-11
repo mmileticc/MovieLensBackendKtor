@@ -159,8 +159,7 @@ fun Application.configureRouting(
                 println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime}")
 
                 try {
-                    // NOVO: Pre nego što krenemo u TMDB petlju, asinhrono povlačimo sve filmove iz Supabase baze
-                    // Ovo radimo ovde kako bismo imali sveže podatke za upoređivanje
+
                     val filmoviIzBaze = try {
                         repository.getAllScrapedMovies()
                     } catch (dbEx: Exception) {
@@ -234,11 +233,7 @@ fun Application.configureRouting(
                     call.respond(payload)
 
                 } catch (e: GeminiOverloadedException) {
-                    // Bugfix (2. septembar 2026, korisnički izveštaj - "pukla mi je greška za
-                    // Gemini preopterećenost") - RANIJE se ovo hvatalo u granu ispod (IllegalStateException)
-                    // i vraćalo 502 sa SIROVIM SDK tekstom greške direktno korisniku. Sad poseban
-                    // status (503) - Android strana (VisionRepository.kt) ga prepoznaje i prikazuje
-                    // smislenu, actionable poruku umesto tehničkog teksta.
+                    
                     println("[ERROR] Gemini overloaded: ${e.message}")
                     call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: IllegalStateException) {

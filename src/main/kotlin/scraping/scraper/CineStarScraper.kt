@@ -8,7 +8,6 @@ import com.microsoft.playwright.Playwright
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.locations.LokacijeBioskopa
 import com.milinko.scraping.model.ScrapedMovie
-import com.milinko.scraping.util.dumpScraperDebugArtifacts
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.time.LocalDate
@@ -51,11 +50,7 @@ class CineStarScraper : CinemaScraper {
         println("[$cinemaName] Inicijalizacija Playwright drajvera...")
 
         Playwright.create().use { localPlaywright ->
-            // Ceo setup (launch/newContext/newPage) obavijen svojim try/catch-om - ista odbrana
-            // kao kod CineGrand-a, da se jasno razlikuje "browser se uopšte nije pokrenuo" od
-            // "browser je radio, ali stranica/selektor nisu" (za tu drugu grupu grešaka
-            // pojedinačne lokacije imaju svoj try/catch ispod, pa jedna pokvarena lokacija ne
-            // obara ostale tri).
+
             try {
                 val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
                 val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
@@ -86,7 +81,6 @@ class CineStarScraper : CinemaScraper {
                             sirovFilmovi.addAll(filmoviSaLokacije)
                         } catch (e: Exception) {
                             println("[$cinemaName] [$imeLokacije] Greška pri skrapovanju: ${e.message}")
-                            dumpScraperDebugArtifacts(page, cinemaName, imeLokacije.lowercase().replace(" ", "-"))
                         }
                     }
 
@@ -115,13 +109,6 @@ class CineStarScraper : CinemaScraper {
         val result = mutableListOf<ScrapedMovie>()
         val koordinate = LokacijeBioskopa.nadjiKoordinate(imeLokacije)
 
-        // Kartica filma: <div class="movie-item ..."><a class="poster-wrapper" href="...">...
-        // <div class="movie-desc"><a href="..."><h2>Naslov <span class="filmlabel">Pretprodaja</span>
-        // (opciono)</h2></a>...<div class="time-format">...</div></div></div>
-        //
-        // NAMERNO čitamo link sa "a.poster-wrapper" (a ne bilo koji <a> unutar .movie-desc) - unutar
-        // .movie-desc se nalazi i .time-format sa gomilom drugih <a class="perf"> linkova (pojedinačni
-        // termini/prodaja karata), pa bi generičko ".movie-desc a" pokupilo pogrešan (prvi nađeni) link.
         val filmovi = doc.select(".movie-item")
 
         for (film in filmovi) {
@@ -132,12 +119,6 @@ class CineStarScraper : CinemaScraper {
                 continue
             }
 
-            // "Pretprodaja" oznaka (span.filmlabel unutar h2) je jedini pouzdan signal da film JOŠ
-            // NIJE počeo redovno prikazivanje (najavljen je sa budućim datumom starta, ali se karte
-            // već prodaju) - tretiramo ga kao isUpcoming, isto polje koje Cine Grand koristi za
-            // "Uskoro" sekciju (nije identična semantika - CineStar "Pretprodaja" već ima prodaju
-            // karata, Cine Grand "Uskoro" nema - ali oba znače "film još nije u redovnom repertoaru",
-            // što je jedina razlika koju Android klijent trenutno pravi preko ovog polja).
             val labelElement = h2.select(".filmlabel").first()
             val isUpcoming = labelElement != null
             labelElement?.remove()
@@ -150,8 +131,6 @@ class CineStarScraper : CinemaScraper {
             result.add(
                 ScrapedMovie(
                     title = naslov,
-                    // Popunjava se kasnije u enrichWithOriginalTitles - kartica filma na stranici
-                    // lokacije NE sadrži izvorni naslov (samo detalj-stranica filma sadrži).
                     originalTitle = null,
                     cinemaName = cinemaName,
                     cinemaLocation = imeLokacije,
@@ -173,10 +152,6 @@ class CineStarScraper : CinemaScraper {
      * čitamo samo JEDNOM po jedinstvenom filmu, ne po (film, lokacija) paru.
      */
     private fun enrichWithOriginalTitles(context: BrowserContext, filmovi: List<ScrapedMovie>): List<ScrapedMovie> {
-        // NAMERNO ne koristimo Map.getOrPut ovde - ona proverava "value == null" a ne
-        // containsKey, pa bi za film BEZ izvornog naslova (domaći film - legitimna, česta
-        // vrednost null) svaki put iznova otvarala detalj-stranicu umesto da upamti da je već
-        // proverila i da rezultat stvarno jeste null.
         val izvorniNasloviPoId = mutableMapOf<String, String?>()
 
         return filmovi.map { film ->
@@ -212,17 +187,10 @@ class CineStarScraper : CinemaScraper {
 
             val doc = Jsoup.parse(privremenaStranica.content())
 
-            // Struktura na detalj-stranici (".actors-producer" blok):
-            // <div class="movie-detail-item">
-            //     <span class="gray">Izvorni naslov: </span><span>Harry Potter and the Philoshopers Stone</span>
-            // </div>
-            // (susedni ".movie-detail-item" blokovi su Režiser/Uloge - imaju isti "span.gray" label,
-            // ali drugu vrednost kao <a>, ne <span> - zato ":not(.gray)" siguran filter samo za ovaj).
             doc.select(".movie-detail-item:has(span.gray:contains(Izvorni naslov)) span:not(.gray)")
                 .first()?.text()?.trim()?.takeIf { it.isNotEmpty() }
         } catch (e: Exception) {
             println("[$cinemaName] Greška pri čitanju izvornog naslova za $urlFilma: ${e.message}")
-            dumpScraperDebugArtifacts(privremenaStranica, cinemaName, "detalj-izvorni-naslov")
             null
         } finally {
             privremenaStranica.close()

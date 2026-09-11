@@ -1,7 +1,3 @@
-// DEPRECATED / NEKORIŠĆENO: zamenjeno sa MainConcurrent.kt + ScrapingEngineConcurrent.
-// Ovaj fajl koristi stari sekvencijalni ScrapingEngine i nije referenciran nigde u produkcionom
-// kodu (Application.kt koristi isključivo ScrapingEngineConcurrent). Bezbedno za ručno brisanje
-// zajedno sa ScrapingEngine.kt kad se potvrdi da nije potreban.
 package com.milinko.scraping
 import com.milinko.scraping.scraper.ArenaCineplexScraper
 import com.milinko.scraping.scraper.CineGrandScraper
@@ -18,9 +14,9 @@ fun main() {
     println("=== INICIJALIZACIJA SISTEMA ZA SKRAPOVANJE ===")
 
     val aktivniScraperi = listOf(
-//        MtsDvoranaScraper(),
-//        CineplexxScraper(),
-//        ArenaCineplexScraper(),
+        MtsDvoranaScraper(),
+        CineplexxScraper(),
+        ArenaCineplexScraper(),
         CineGrandScraper()
     )
 

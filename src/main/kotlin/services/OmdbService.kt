@@ -78,9 +78,7 @@ class OmdbService(private val apiKey: String?) {
                 }
             }
         } catch (e: Exception) {
-            // Namerno tiho - OMDb je dopunski podatak, kvar ovog poziva ne sme oboriti prikaz
-            // ostatka Movie Detail ekrana (isti princip kao showtimes/enrichment greške svuda
-            // drugde u ovom fajlu).
+
             println("[WARN] OMDb poziv nije uspeo za $imdbId: ${e.message}")
             null
         }

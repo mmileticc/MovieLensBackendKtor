@@ -69,8 +69,6 @@ data class FriendActionRequest(val action: String)
 @Serializable
 data class ActivityMetadataDto(
     val rating: Double? = null,
-    // Kratak tekstualni komentar uz ocenu (16. avgust 2026) - isto polje kao HistoryItemDto.review,
-    // prosleđeno kroz aktivnost prijatelja za buduću upotrebu u feed-u.
     val review: String? = null,
     @SerialName("watched_at") val watchedAt: Long? = null
 )

@@ -2,7 +2,6 @@ package com.milinko.scraping.scraper
 
 import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
 import com.milinko.scraping.model.ScrapedMovie
-import com.milinko.scraping.util.dumpScraperDebugArtifacts
 import org.jsoup.Jsoup
 import java.io.IOException
 import java.time.LocalDate
@@ -48,7 +47,6 @@ class RodaCineplexScraper : CinemaScraper {
             val filmoviSaRepertoara = parseMoviesFromDoc(docRepertoar, isUpcoming = false)
             if (filmoviSaRepertoara.isEmpty()) {
                 println("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
-                dumpScraperDebugArtifacts(docRepertoar.outerHtml(), cinemaName, "repertoar-prazno")
             }
             tekuciFilmovi.addAll(filmoviSaRepertoara)
         } catch (e: IOException) {
