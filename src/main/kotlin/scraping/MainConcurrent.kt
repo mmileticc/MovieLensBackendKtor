@@ -43,11 +43,11 @@ suspend fun main() {
     println("=== DIJAGNOSTIČKI TEST SKRAPOVANJA (bez upisa u bazu) ===")
 
     val aktivniScraperi = listOf(
-//        MtsDvoranaScraper(),
-//        CineplexxScraper(),
-//        ArenaCineplexScraper(),
-//        CineGrandScraper(),
-//        CineStarScraper(),
+        MtsDvoranaScraper(),
+        CineplexxScraper(),
+        ArenaCineplexScraper(),
+        CineGrandScraper(),
+        CineStarScraper(),
         RodaCineplexScraper(),
         TuckwoodCineplexScraper()
     )

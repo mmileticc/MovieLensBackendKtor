@@ -66,13 +66,20 @@ class MtsDvoranaScraper : CinemaScraper {
         return filtriranaMapa.values.toList()
     }
 
+    /**
+     * mtsdvorana.rs je redizajniran (oktobar 2026) u Nuxt + Tailwind - stare ".movie-item"
+     * kartice više ne postoje. Kartice su i dalje server-renderovane (Jsoup je dovoljan):
+     * `<a href="/film/<slug>" class="group block"><img/><h3>Naslov</h3><p>Žanr</p></a>`.
+     * Početna strana u istom formatu prikazuje i događaje ("/dogadjaj/..."), pa filtriramo
+     * isključivo linkove ka "/film/". Ista kartica se ne ponavlja, ali distinct ostaje radi sigurnosti.
+     */
     private fun parseMoviesFromDoc(doc: Document, isUpcoming: Boolean, vecSkrapovaniLinkovi: Set<String>): List<ScrapedMovie> {
         val result = mutableListOf<ScrapedMovie>()
-        val filmovi = doc.select(".movie-item")
+        val filmovi = doc.select("a[href^=/film/]:has(h3)").distinctBy { it.attr("href") }
 
         for (film in filmovi) {
-            val naslov = film.select(".movie-item-title").text().trim()
-            var link = film.select("a").attr("href").trim()
+            val naslov = film.select("h3").first()?.text()?.trim().orEmpty()
+            var link = film.attr("href").trim()
 
             if (link.startsWith("/")) {
                 link = baseUrl + link
@@ -122,7 +129,9 @@ class MtsDvoranaScraper : CinemaScraper {
                 .timeout(5000)
                 .get()
 
-            val originalTitle = doc.select(".original-title").text().trim()
+            // Novi sajt (ista "hf-*" platforma kao Cine Grand) - originalni naslov je u ".hf-original"
+            // (pojavljuje se 2x zbog mobilnog/desktop layout-a, zato first()).
+            val originalTitle = doc.select(".hf-original").first()?.text()?.trim().orEmpty()
             originalTitle.ifEmpty { null }
         } catch (e: IOException) {
             println("[$cinemaName] Greška pri učitavanju stranice filma: $urlFilma -> ${e.message}")

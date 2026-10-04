@@ -13,13 +13,7 @@ import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
-import com.milinko.scraping.scraper.ArenaCineplexScraper
-import com.milinko.scraping.scraper.CineGrandScraper
-import com.milinko.scraping.scraper.CineStarScraper
-import com.milinko.scraping.scraper.CineplexxScraper
-import com.milinko.scraping.scraper.MtsDvoranaScraper
-import com.milinko.scraping.scraper.RodaCineplexScraper
-import com.milinko.scraping.scraper.TuckwoodCineplexScraper
+import com.milinko.scraping.sviAktivniScraperi
 import com.milinko.services.CinemaSemanticIndex
 import com.milinko.services.GeminiService
 import com.milinko.services.GeminiTextEmbedder
@@ -38,6 +32,7 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import com.milinko.util.CINEMA_ZONE_ID
@@ -228,16 +223,7 @@ fun Application.configureScrapingLifecycle(
                     println("[LOG] Podaci u bazi su zastareli (Zadnji upis: $datumPoslednjegSkrapovanja, Danas je: $danasnjiDatum). Pokrećem osvežavanje...")
                 }
 
-                val aktivniScraperi = listOf(
-                    MtsDvoranaScraper(),
-                    CineplexxScraper(),
-                    ArenaCineplexScraper(),
-                    CineGrandScraper(),
-                    CineStarScraper(),
-                    RodaCineplexScraper(),
-                    TuckwoodCineplexScraper()
-                )
-                val engine = ScrapingEngineConcurrent(aktivniScraperi)
+                val engine = ScrapingEngineConcurrent(sviAktivniScraperi())
                 val skrapovaniFilmovi = engine.runAllScrapers(danasnjiDatum)
                 //
 
@@ -280,19 +266,47 @@ fun Application.configureScrapingLifecycle(
  * Bugfix (25. avgust 2026, treći deo) - puni semantičke indekse NEZAVISNO od skrejpovanja, za
  * slučaj SCRAPING_BOOLEAN=false (npr. Render free plan, gde korisnik namerno drži skrepere
  * isključene jer ih taj host ne izdrži). Čita TRENUTNO stanje `scraped_movies` tabele (deljena
- * Supabase baza - skrejpovanje se radi na drugom hostu, npr. lokalno) i gradi oba indeksa od
- * toga, bez pokretanja ijednog skrepera ovde. Poziva se samo jednom, pri startu - ako se
- * `scraped_movies` tabela kasnije promeni (drugi host je skrejpovao novije podatke), indeks se
- * neće sam osvežiti dok se ovaj proces ne restartuje (isti kompromis kao pre ove izmene, samo
- * sad radi i kad je skrejpovanje ovde isključeno).
+ * Supabase baza - skrejpovanje se radi na drugom hostu, npr. GitHub Actions ScraperJob) i gradi
+ * oba indeksa od toga, bez pokretanja ijednog skrepera ovde.
+ *
+ * Posle starta periodično (SEMANTIC_INDEX_POLL_MINUTES, podrazumevano 60) proverava najnoviji
+ * `created_at` u `scraped_movies` i osvežava indekse samo kad se promenio - Render instanca se
+ * drži budnom cron ping-ovima pa se praktično nikad ne restartuje, a bez ovoga bi semantička
+ * pretraga zauvek videla repertoar od trenutka poslednjeg deploy-a. Provera je jedan jeftin
+ * MAX() upit; Gemini embedding pozivi se dešavaju samo kad stvarno stignu novi podaci (i tad samo
+ * za filmove čiji se tekst promenio - videti MovieEmbeddingsTable keš).
  */
 fun Application.configureSemanticIndexRefresh(
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
+    val repository = ScrapedMoviesRepository()
+    val intervalMinuta = System.getenv("SEMANTIC_INDEX_POLL_MINUTES")?.toLongOrNull()?.takeIf { it > 0 } ?: 60L
+
     launch {
-        println("[LOG] SCRAPING_BOOLEAN nije 'true' - skrejpovanje se preskače na ovom hostu, ali semantički indeksi se i dalje pune iz postojećih podataka u bazi.")
+        println("[LOG] SCRAPING_BOOLEAN nije 'true' - skrejpovanje se preskače na ovom hostu, ali semantički indeksi se i dalje pune iz postojećih podataka u bazi (provera novih podataka svakih $intervalMinuta min).")
+
+        var poslednjiViden = try {
+            repository.getLatestScrapeTimestamp()
+        } catch (e: Exception) {
+            println("[WARN] Čitanje poslednjeg vremena skrejpovanja nije uspelo: ${e.localizedMessage}")
+            null
+        }
         refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+
+        while (true) {
+            delay(intervalMinuta * 60_000)
+            try {
+                val najnoviji = repository.getLatestScrapeTimestamp()
+                if (najnoviji != null && najnoviji != poslednjiViden) {
+                    println("[LOG] Novi skrejpovani podaci u bazi ($poslednjiViden -> $najnoviji UTC) - osvežavam semantičke indekse.")
+                    refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+                    poslednjiViden = najnoviji
+                }
+            } catch (e: Exception) {
+                println("[WARN] Periodična provera novih skrejpovanih podataka nije uspela, pokušavam ponovo za $intervalMinuta min: ${e.localizedMessage}")
+            }
+        }
     }
 }
 

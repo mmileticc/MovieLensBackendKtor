@@ -5,6 +5,7 @@ import com.milinko.db.DatabaseFactory.dbQuery
 import com.milinko.scraping.model.ScrapedMovie
 import com.milinko.util.CINEMA_TIME_ZONE
 import kotlinx.datetime.Clock
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toJavaLocalDate
@@ -14,6 +15,7 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
+import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 
@@ -78,18 +80,24 @@ class ScrapedMoviesRepository {
         ScrapedMoviesTable.selectAll().limit(1).empty()
     }
 
-    suspend fun getLatestScrapeDate(): java.time.LocalDate? = dbQuery {
-        val firstRow = ScrapedMoviesTable.selectAll().limit(1).singleOrNull()
-        if (firstRow != null) {
-            // createdAt je sačuvan kao UTC wall-clock (clientDefault iznad). Prvo ga tumačimo kao
-            // UTC Instant, pa ga prevodimo u beogradski kalendarski dan - ne uzimamo datumski deo
-            // direktno iz UTC vrednosti (to je bio uzrok bug-a: dan bi se "prevrnuo" 1-2h kasnije
-            // nego što je stvarno ponoć u Beogradu, pa bi se skrejpovanje ponovo pokretalo).
-            val kotlinxDateTime = firstRow[ScrapedMoviesTable.createdAt]
-            kotlinxDateTime.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
-        } else {
-            null
-        }
+    /**
+     * Najnoviji `created_at` u tabeli (UTC wall-clock) - MAX(), ne proizvoljan prvi red: posle
+     * per-bioskop zamene u tabeli istovremeno žive redovi različite starosti (bioskop koji je pao
+     * zadržava jučerašnje), pa bi `limit(1)` bez sortiranja vraćao nasumično star datum.
+     * Koristi ga i periodična provera za osvežavanje semantičkog indeksa (Application.kt).
+     */
+    suspend fun getLatestScrapeTimestamp(): LocalDateTime? = dbQuery {
+        val maxCreatedAt = ScrapedMoviesTable.createdAt.max()
+        ScrapedMoviesTable.slice(maxCreatedAt).selectAll().singleOrNull()?.get(maxCreatedAt)
+    }
+
+    suspend fun getLatestScrapeDate(): java.time.LocalDate? {
+        // createdAt je sačuvan kao UTC wall-clock (clientDefault iznad). Prvo ga tumačimo kao
+        // UTC Instant, pa ga prevodimo u beogradski kalendarski dan - ne uzimamo datumski deo
+        // direktno iz UTC vrednosti (to je bio uzrok bug-a: dan bi se "prevrnuo" 1-2h kasnije
+        // nego što je stvarno ponoć u Beogradu, pa bi se skrejpovanje ponovo pokretalo).
+        val najnoviji = getLatestScrapeTimestamp() ?: return null
+        return najnoviji.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
     }
 
     // 2. Čitanje svih filmova iz baze (ako ti zatrebaju da ih vratiš kroz rutu)

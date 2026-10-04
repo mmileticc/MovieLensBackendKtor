@@ -1,0 +1,109 @@
+# Dnevno skrejpovanje bioskopa -> Supabase (scraped_movies).
+# Render backend (SCRAPING_BOOLEAN=false) sam primeti nove podatke u roku od
+# SEMANTIC_INDEX_POLL_MINUTES i osveži semantički indeks.
+#
+# Potrebni repository secrets (Settings -> Secrets and variables -> Actions):
+#   DB_HOST, DB_PASSWORD, TMDB_API_KEY  (obavezni)
+#   DB_PORT, DB_NAME, DB_USER           (opcioni - podrazumevano 6543 / postgres / postgres)
+#   MAIL_USERNAME, MAIL_PASSWORD        (Gmail adresa pošiljaoca + Gmail App Password)
+#   MAIL_TO                             (adresa na koju stiže izveštaj)
+#
+# Posle svakog run-a stiže mejl sa statusom i tabelom po bioskopu. Run je crven ako bilo
+# koji bioskop vrati 0 filmova - znak da je sajt promenio strukturu. Ostali bioskopi su i
+# tada upisani u bazu.
+
+name: Daily cinema scrape
+
+on:
+  schedule:
+    # GitHub cron je u UTC-u: 04:00 UTC = 06:00 po letnjem / 05:00 po zimskom beogradskom vremenu.
+    # GitHub ume da zakasni sa schedule run-ovima i do ~1h pri gužvi - nije bitno za dnevni posao.
+    - cron: "0 4 * * *"
+  workflow_dispatch: # ručno pokretanje iz Actions taba
+
+concurrency:
+  group: daily-scrape
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    # 22.04 namerno (ne ubuntu-latest): Playwright 1.42 "install --with-deps" ne podržava 24.04.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.42.0-${{ runner.os }}
+
+      - name: Build
+        run: |
+          chmod +x ./gradlew
+          ./gradlew classes --no-daemon
+
+      - name: Install Playwright Chromium + system deps
+        run: ./gradlew playwrightCli --args="install --with-deps chromium" --no-daemon
+
+      - name: Run scraper job
+        id: scrape
+        env:
+          SCRAPE_REPORT_FILE: ${{ runner.temp }}/scrape-report.md
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT || '6543' }}
+          DB_NAME: ${{ secrets.DB_NAME || 'postgres' }}
+          DB_USER: ${{ secrets.DB_USER || 'postgres' }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          # Chromium je već instaliran korakom iznad - bez ovoga Playwright.create() skida i
+          # Firefox/WebKit koje nijedan skreper ne koristi.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: ./gradlew runScraperJob --no-daemon
+
+      # ---- Mejl posle SVAKOG run-a (uspeh ili neuspeh) ----
+      - name: Prepare e-mail body
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/scrape-report.md
+          STATUS: ${{ job.status == 'success' && '✅ Uspešno - svi bioskopi su vratili filmove' || '❌ Neuspešno - bar jedan bioskop je vratio 0 filmova ili je job pao' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "**Status:** $STATUS"
+            echo
+            if [ -s "$REPORT" ]; then
+              cat "$REPORT"
+            else
+              echo "_Izveštaj nije generisan - job je pao pre ili tokom pokretanja scrapera (build, Playwright instalacija...)._"
+            fi
+            echo
+            echo "Log run-a: $RUN_URL"
+          } > "${{ runner.temp }}/mail-body.md"
+
+      - name: Send e-mail
+        if: always()
+        uses: dawidd6/action-send-mail@v22
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: MovieNe Scraper <${{ secrets.MAIL_USERNAME }}>
+          to: ${{ secrets.MAIL_TO }}
+          subject: "${{ job.status == 'success' && '✅' || '❌' }} MovieNe scraping - ${{ job.status }}"
+          html_body: file://${{ runner.temp }}/mail-body.md
+          convert_markdown: true

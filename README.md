@@ -240,6 +240,7 @@ MovieLensBackendKtor/
 | `OMDB_API_KEY` | No | Enables IMDb/Rotten Tomatoes enrichment; ratings silently omitted if unset |
 | `ALLOWED_ORIGINS` | No | Comma-separated origin allowlist for CORS; defaults to `anyHost()` |
 | `ENABLE_LOCAL_EMBEDDING` | No | `"true"` to also populate the local MiniLM semantic index alongside Gemini's |
+| `SEMANTIC_INDEX_POLL_MINUTES` | No (default `60`) | With `SCRAPING_BOOLEAN=false`: how often to check `scraped_movies` for new data and rebuild the semantic index |
 
 ### Key API endpoints
 
@@ -299,6 +300,30 @@ $env:SCRAPING_BOOLEAN = "false"   # set "true" to also run scrapers locally
 ```
 
 The server starts on `http://localhost:8080`.
+
+### Daily scraping (GitHub Actions)
+
+The Render web service runs with `SCRAPING_BOOLEAN=false` (the free tier cannot run
+Playwright). Scraping runs as a standalone job instead — `scraping/ScraperJob.kt`, started once
+a day by `.github/workflows/daily-scrape.yml` (04:00 UTC, also runnable manually from the
+Actions tab):
+
+1. All 7 scrapers run in parallel, results are enriched with TMDB IDs and written to
+   `scraped_movies` (per-cinema replacement, same as the in-process lifecycle).
+2. The run fails (red ✗, GitHub e-mail) if any cinema returned 0 movies — the usual sign that a
+   site changed its markup. The other cinemas are still written.
+3. A per-cinema table is written to the run's Summary tab.
+
+The web service picks up the new data by itself: it polls `MAX(created_at)` every
+`SEMANTIC_INDEX_POLL_MINUTES` (default 60) and rebuilds the semantic index when it changes.
+Repertoire/showtime endpoints read the table directly, so they see new data immediately.
+
+After every run (success or failure) an e-mail with the status and the per-cinema table is sent
+via Gmail SMTP.
+
+Required repository secrets: `DB_HOST`, `DB_PASSWORD`, `TMDB_API_KEY`, `MAIL_USERNAME`,
+`MAIL_PASSWORD` (Gmail App Password), `MAIL_TO` (optional: `DB_PORT`, `DB_NAME`, `DB_USER`).
+Run locally with `./gradlew runScraperJob`.
 
 ### Docker / production
 

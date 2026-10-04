@@ -18,6 +18,24 @@ kotlin {
     jvmToolchain(21)
 }
 
+// Samostalni dnevni scraping job (bez Ktor servera) - videti scraping/ScraperJob.kt i
+// .github/workflows/daily-scrape.yml. Lokalno: ./gradlew runScraperJob (uz DB_* i TMDB_API_KEY).
+tasks.register<JavaExec>("runScraperJob") {
+    group = "application"
+    description = "Skrejpuje sve bioskope, dodaje TMDB ID-jeve i upisuje u scraped_movies."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.milinko.scraping.ScraperJobKt")
+}
+
+// Playwright Java CLI (ista verzija kao biblioteka) - u CI-ju instalira Chromium + sistemske
+// zavisnosti pre job-a: ./gradlew playwrightCli --args="install --with-deps chromium"
+tasks.register<JavaExec>("playwrightCli") {
+    group = "application"
+    description = "Pokreće Playwright CLI (npr. instalacija browsera)."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.microsoft.playwright.CLI")
+}
+
 dependencies {
     implementation("io.ktor:ktor-server-core-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
