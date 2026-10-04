@@ -36,6 +36,8 @@ class TmdbService(private val apiKey: String) {
     // još ređe od detalja filma, isti dugi TTL kao detailCache je opravdan.
     private val personCache = TtlCache<Int, TmdbPersonDetail>(ttlMillis = 60 * 60 * 1000)
     private val popularCache = TtlCache<Int, List<TmdbMovieMatch>>(ttlMillis = 2 * 60 * 60 * 1000)
+    // Lista TMDB žanrova se praktično nikad ne menja - jedan ključ, dug TTL.
+    private val genreListCache = TtlCache<String, List<TmdbGenre>>(ttlMillis = 24 * 60 * 60 * 1000)
     // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
     // 3-4 ekrana") - keš sad drži CEO GenreDiscoverPage (filmovi + total_pages), ne samo listu
     // filmova, videti getMoviesByGenresWithTotalPages ispod za obrazloženje.
@@ -136,7 +138,8 @@ class TmdbService(private val apiKey: String) {
                 overview = r.overview,
                 posterPath = r.posterPath,
                 popularity = r.popularity,
-                voteAverage = r.voteAverage
+                voteAverage = r.voteAverage,
+                genreIds = r.genreIds
             )
         }
         searchCache.put(cacheKey, result)
@@ -153,7 +156,12 @@ class TmdbService(private val apiKey: String) {
         detailCache.get(tmdbId)?.let { return it }
 
         val url = URLBuilder("https://api.themoviedb.org/3/movie/$tmdbId").apply {
-            parameters.append("append_to_response", "credits")
+            // videos + images u ISTOM pozivu (trejleri i galerija na Movie Detail-u) - i dalje jedan
+            // TMDB request po filmu, keširan u detailCache kao i do sada.
+            parameters.append("append_to_response", "credits,videos,images")
+            // Bez ovoga images vraća samo slike na `language` jeziku - backdrop-ovi su najčešće bez
+            // teksta (iso_639_1 = null), pa bi galerija ostala skoro prazna.
+            parameters.append("include_image_language", "en,null")
             parameters.append("language", "en-US")
             if (!useV4Bearer) parameters.append("api_key", apiKey)
         }.build()
@@ -180,7 +188,22 @@ class TmdbService(private val apiKey: String) {
             cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) },
             // imdb_id dolazi već u osnovnom /movie/{id} odgovoru, bez append_to_response - koristi
             // se za dopunske IMDb/Rotten Tomatoes ocene preko OmdbService (videti MovieRouting.kt).
-            imdbId = dto.imdbId?.takeIf { it.isNotBlank() }
+            imdbId = dto.imdbId?.takeIf { it.isNotBlank() },
+            // Samo YouTube trejleri/teaseri (to je jedino što Android plejer ume da pusti),
+            // zvanični Trailer-i prvi.
+            videos = dto.videos?.results.orEmpty()
+                .filter { it.site == "YouTube" && !it.key.isNullOrBlank() && it.type in TRAILER_TYPES }
+                .sortedWith(
+                    compareByDescending<TmdbVideoDto> { it.type == "Trailer" }
+                        .thenByDescending { it.official == true }
+                )
+                .take(MAX_VIDEOS)
+                .map { TmdbVideo(key = it.key!!, name = it.name.orEmpty(), type = it.type.orEmpty()) },
+            backdrops = dto.images?.backdrops.orEmpty()
+                .sortedByDescending { it.voteAverage ?: 0.0 }
+                .mapNotNull { it.filePath?.takeIf { p -> p.isNotBlank() } }
+                .distinct()
+                .take(MAX_BACKDROPS)
         )
         detailCache.put(tmdbId, detail)
         return detail
@@ -239,6 +262,26 @@ class TmdbService(private val apiKey: String) {
         return detail
     }
 
+    /** Svi TMDB filmski žanrovi (id -> naziv) - za filter po žanru na Android "Vidi sve" ekranima. */
+    suspend fun getGenres(): List<TmdbGenre> {
+        genreListCache.get("movie")?.let { return it }
+
+        val url = URLBuilder("https://api.themoviedb.org/3/genre/movie/list").apply {
+            parameters.append("language", "en-US")
+            if (!useV4Bearer) parameters.append("api_key", apiKey)
+        }.build()
+
+        val response: HttpResponse = getWithRetry(url)
+        if (!response.status.isSuccess()) {
+            val bodyText = try { response.bodyAsText() } catch (_: Throwable) { "" }
+            throw IllegalStateException("TMDB genre list error: HTTP ${response.status.value}. ${unauthorizedHint(response.status)} Body=${bodyText.take(300)}")
+        }
+        val body: TmdbGenreListDto = response.body()
+        val result = body.genres.map { TmdbGenre(it.id, it.name) }
+        genreListCache.put("movie", result)
+        return result
+    }
+
     /** Popularni filmovi (koristi se za /api/movies/trending i /featured). */
     suspend fun getPopularMovies(page: Int = 1): List<TmdbMovieMatch> {
         popularCache.get(page)?.let { return it }
@@ -264,7 +307,8 @@ class TmdbService(private val apiKey: String) {
                 overview = r.overview,
                 posterPath = r.posterPath,
                 popularity = r.popularity,
-                voteAverage = r.voteAverage
+                voteAverage = r.voteAverage,
+                genreIds = r.genreIds
             )
         }
         popularCache.put(page, result)
@@ -326,7 +370,8 @@ class TmdbService(private val apiKey: String) {
                 overview = r.overview,
                 posterPath = r.posterPath,
                 popularity = r.popularity,
-                voteAverage = r.voteAverage
+                voteAverage = r.voteAverage,
+                genreIds = r.genreIds
             )
         }
         val result = GenreDiscoverPage(movies, (body.totalPages ?: 1).coerceAtLeast(1))
@@ -356,7 +401,10 @@ private data class TmdbMovieDto(
     val overview: String? = null,
     @SerialName("poster_path") val posterPath: String? = null,
     val popularity: Double? = null,
-    @SerialName("vote_average") val voteAverage: Double? = null
+    @SerialName("vote_average") val voteAverage: Double? = null,
+    // TMDB šalje genre_ids u svim list odgovorima (/popular, /discover, /search) - koristi ga
+    // Android za filter po žanru na "Vidi sve" ekranima.
+    @SerialName("genre_ids") val genreIds: List<Int> = emptyList()
 )
 
 @Serializable
@@ -372,8 +420,38 @@ private data class TmdbMovieDetailDto(
     val runtime: Int? = null,
     val genres: List<TmdbGenreDto> = emptyList(),
     val credits: TmdbCreditsDto? = null,
-    @SerialName("imdb_id") val imdbId: String? = null
+    @SerialName("imdb_id") val imdbId: String? = null,
+    val videos: TmdbVideosDto? = null,
+    val images: TmdbImagesDto? = null
 )
+
+@Serializable
+private data class TmdbVideosDto(val results: List<TmdbVideoDto> = emptyList())
+
+@Serializable
+private data class TmdbVideoDto(
+    val key: String? = null,
+    val name: String? = null,
+    val site: String? = null,
+    val type: String? = null,
+    val official: Boolean? = null
+)
+
+@Serializable
+private data class TmdbImagesDto(val backdrops: List<TmdbImageDto> = emptyList())
+
+@Serializable
+private data class TmdbImageDto(
+    @SerialName("file_path") val filePath: String? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null
+)
+
+@Serializable
+private data class TmdbGenreListDto(val genres: List<TmdbGenreDto> = emptyList())
+
+private val TRAILER_TYPES = setOf("Trailer", "Teaser")
+private const val MAX_VIDEOS = 5
+private const val MAX_BACKDROPS = 12
 
 @Serializable
 private data class TmdbGenreDto(val id: Int, val name: String)
@@ -401,8 +479,13 @@ data class TmdbMovieDetail(
     val runtime: Int?,
     val genres: List<TmdbGenre>,
     val cast: List<TmdbCastMember>,
-    val imdbId: String? = null
+    val imdbId: String? = null,
+    val videos: List<TmdbVideo> = emptyList(),
+    val backdrops: List<String> = emptyList()
 )
+
+/** YouTube trejler/teaser filma - `key` je YouTube video ID. */
+data class TmdbVideo(val key: String, val name: String, val type: String)
 
 // @Serializable (ne samo data class) - genres se čuvaju kao JSON string u movies.genres koloni
 // (Faza 4, MOVIELENS_ROADMAP.md - taste profile po žanru), videti MoviesRepository.ensureCached.
@@ -473,7 +556,8 @@ data class TmdbMovieMatch(
     val overview: String? = null,
     val posterPath: String? = null,
     val popularity: Double? = null,
-    val voteAverage: Double? = null
+    val voteAverage: Double? = null,
+    val genreIds: List<Int> = emptyList()
 )
 
 

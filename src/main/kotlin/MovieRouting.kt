@@ -20,6 +20,8 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -39,7 +41,8 @@ data class MovieSearchResultDto(
     @SerialName("release_date") val releaseDate: String? = null,
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("vote_average") val voteAverage: Double = 0.0,
-    val overview: String? = null
+    val overview: String? = null,
+    @SerialName("genre_ids") val genreIds: List<Int> = emptyList()
 )
 
 @Serializable
@@ -47,6 +50,13 @@ data class MovieListResponseDto(val results: List<MovieSearchResultDto>)
 
 @Serializable
 data class GenreDto(val id: Int, val name: String)
+
+@Serializable
+data class GenreListResponseDto(val genres: List<GenreDto>)
+
+// YouTube trejler/teaser - `key` je YouTube video ID (Android ga pušta u ugrađenom plejeru).
+@Serializable
+data class MovieVideoDto(val key: String, val name: String, val type: String)
 
 @Serializable
 data class CastMemberDto(
@@ -83,7 +93,11 @@ data class MovieDetailDto(
     // Dopunske ocene sa OMDb-a (3. septembar 2026) - null ako OMDB_API_KEY nije podešen na
     // serveru, film nema imdb_id, ili OMDb nema podatke za dati film (videti OmdbService).
     @SerialName("imdb_rating") val imdbRating: Double? = null,
-    @SerialName("rotten_tomatoes") val rottenTomatoes: String? = null
+    @SerialName("rotten_tomatoes") val rottenTomatoes: String? = null,
+    // "Istraži više" sekcija na Movie Detail-u: link ka IMDb-u, trejleri i galerija backdrop-ova.
+    @SerialName("imdb_id") val imdbId: String? = null,
+    val videos: List<MovieVideoDto> = emptyList(),
+    val backdrops: List<String> = emptyList()
 )
 
 /** Haversine formula - distanca u km između dve geo-tačke (korisnik i bioskop). */
@@ -110,6 +124,9 @@ private const val FEATURED_PAGE_SIZE = 20
 // Svaki žanr dobija bar ovoliko mesta u predlogu, čak i onaj sa najslabijim afinitetom od top 3 -
 // sprečava da treći žanr praktično nestane iz predloga zbog zaokruživanja.
 private const val MIN_SLOTS_PER_GENRE = 2
+
+// Koliko TMDB detalj poziva /now-in-cinemas sme da radi istovremeno (pri praznom kešu).
+private const val NOW_IN_CINEMAS_TMDB_PARALLELISM = 8
 
 /**
  * Umesto jednog "OR" TMDB discover upita preko sva 3 top žanra (sortiranog isključivo po globalnoj
@@ -152,7 +169,8 @@ private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
     releaseDate = releaseDate,
     posterPath = posterPath,
     voteAverage = voteAverage ?: 0.0,
-    overview = overview
+    overview = overview,
+    genreIds = genreIds
 )
 
 // "Prijatelji su gledali ovaj film" bedž na Movie Detail-u - namerno posebna, JWT-zaštićena ruta
@@ -180,7 +198,15 @@ data class NowInCinemasMovieDto(
     val title: String,
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("vote_average") val voteAverage: Double = 0.0,
-    val cinemas: List<String> = emptyList()
+    val cinemas: List<String> = emptyList(),
+    // Polja za "U bioskopima" ekran (filteri po žanru i Sada/Uskoro, prikaz sa opisom) - popunjena
+    // samo u /now-in-cinemas; semantic-search ih ostavlja podrazumevanim.
+    val genres: List<GenreDto> = emptyList(),
+    @SerialName("release_date") val releaseDate: String? = null,
+    val overview: String? = null,
+    val runtime: Int? = null,
+    // true samo ako film NIGDE još ne igra (svi skrapovani redovi su "uskoro").
+    @SerialName("is_upcoming") val isUpcoming: Boolean = false
 )
 
 @Serializable
@@ -279,17 +305,31 @@ fun Application.configureMovieRouting(
                 }
             }
 
+            get("/genres") {
+                try {
+                    val genres = tmdbService.getGenres()
+                    call.respond(GenreListResponseDto(genres.map { GenreDto(it.id, it.name) }))
+                } catch (e: Exception) {
+                    println("[ERROR] /api/movies/genres: ${e.message}")
+                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB žanrovi nisu dostupni"))
+                }
+            }
+
+            // Ceo repertoar (ranije samo prvih 20 - Home traka sad sama uzima 20, a "U bioskopima"
+            // ekran prikazuje sve). TMDB detalji su keširani 1h, ali pri praznom kešu ovo je po jedan
+            // poziv po filmu - Semaphore ograničava paralelizam zbog TMDB rate limita.
             get("/now-in-cinemas") {
                 try {
                     val scraped = scrapedMoviesRepository.getAllScrapedMovies()
 
                     val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
+                    val tmdbLimiter = Semaphore(NOW_IN_CINEMAS_TMDB_PARALLELISM)
 
                     val results = coroutineScope {
-                        byTmdbId.entries.take(20).map { (tmdbId, rows) ->
+                        byTmdbId.entries.map { (tmdbId, rows) ->
                             async {
                                 val detail = try {
-                                    tmdbService.getMovieDetails(tmdbId)
+                                    tmdbLimiter.withPermit { tmdbService.getMovieDetails(tmdbId) }
                                 } catch (e: Exception) {
                                     null
                                 } ?: return@async null
@@ -298,11 +338,20 @@ fun Application.configureMovieRouting(
                                     title = detail.title,
                                     posterPath = detail.posterPath,
                                     voteAverage = detail.voteAverage ?: 0.0,
-                                    cinemas = rows.map { it.cinemaName }.distinct().sorted()
+                                    cinemas = rows.map { it.cinemaName }.distinct().sorted(),
+                                    genres = detail.genres.map { GenreDto(it.id, it.name) },
+                                    releaseDate = detail.releaseDate,
+                                    overview = detail.overview,
+                                    runtime = detail.runtime,
+                                    isUpcoming = rows.all { it.isUpcoming }
                                 )
                             }
                         }.awaitAll().filterNotNull()
-                    }
+                    }.sortedWith(
+                        // Prvo ono što sada igra, pa po broju bioskopa (šire prikazivano = relevantnije).
+                        compareBy<NowInCinemasMovieDto> { it.isUpcoming }
+                            .thenByDescending { it.cinemas.size }
+                    )
                     call.respond(NowInCinemasResponseDto(results))
                 } catch (e: Exception) {
                     println("[ERROR] /api/movies/now-in-cinemas: ${e.message}")
@@ -400,7 +449,10 @@ fun Application.configureMovieRouting(
                             cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) },
                             showtimes = showtimes,
                             imdbRating = omdbRatings?.imdbRating,
-                            rottenTomatoes = omdbRatings?.rottenTomatoesPercent
+                            rottenTomatoes = omdbRatings?.rottenTomatoesPercent,
+                            imdbId = detail.imdbId,
+                            videos = detail.videos.map { MovieVideoDto(it.key, it.name, it.type) },
+                            backdrops = detail.backdrops
                         )
                     )
                 } catch (e: Exception) {

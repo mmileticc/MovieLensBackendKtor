@@ -253,9 +253,10 @@ MovieLensBackendKtor/
 | GET | `/api/movies/search?query=` | Title search (TMDB proxy) |
 | GET | `/api/movies/trending?page=` | Popular movies |
 | GET | `/api/movies/featured?userId=&page=` | Personalized or generic recommendations |
-| GET | `/api/movies/now-in-cinemas` | Currently scraped repertoire |
+| GET | `/api/movies/genres` | All TMDB movie genres (id → name), cached 24h |
+| GET | `/api/movies/now-in-cinemas` | Full scraped repertoire with genres, overview, runtime and now/upcoming flag |
 | GET | `/api/movies/now-in-cinemas/semantic-search?q=&engine=` | Natural-language repertoire search |
-| GET | `/api/movies/{tmdbId}?lat=&lon=` | Movie detail, showtimes, IMDb/RT ratings |
+| GET | `/api/movies/{tmdbId}?lat=&lon=` | Movie detail, showtimes, IMDb/RT ratings, IMDb ID, YouTube trailers, backdrop images |
 | GET | `/api/people/{id}` | Actor/person detail + filmography |
 
 **Protected (`Authorization: Bearer <jwt>`):**
