@@ -78,6 +78,18 @@ private suspend fun runScraperJob(): Int {
     val tmdbService = TmdbService(apiKey = tmdbKey)
 
     val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
+
+    // Rezervni zakazani run (videti daily-scrape.yml) - GitHub ume da ODBACI zakazan run pri gužvi,
+    // pa postoji drugi, kasniji termin koji radi samo ako glavni danas nije uspeo da upiše ništa.
+    if (System.getenv("SKIP_IF_FRESH").equals("true", ignoreCase = true)) {
+        val poslednjiScrape = repository.getLatestScrapeDate()
+        if (poslednjiScrape == danasnjiDatum) {
+            println("[ScraperJob] Podaci su već od danas ($poslednjiScrape) - rezervni run preskače skrejpovanje.")
+            writeGithubOutput("skipped", "true")
+            return 0
+        }
+        println("[ScraperJob] Poslednji scrape je od $poslednjiScrape - rezervni run preuzima dnevno skrejpovanje.")
+    }
     val scraperi = sviAktivniScraperi()
 
     val skrapovaniFilmovi = ScrapingEngineConcurrent(scraperi).runAllScrapers(danasnjiDatum)
@@ -108,6 +120,16 @@ private suspend fun runScraperJob(): Int {
     } else {
         println("[ScraperJob] Bioskopi bez rezultata: $prazni - ostali su upisani, job se označava kao neuspešan.")
         1
+    }
+}
+
+/** Izlaz koraka za workflow (npr. `skipped=true` da se ne šalje mejl) - GITHUB_OUTPUT postoji samo u CI-ju. */
+private fun writeGithubOutput(kljuc: String, vrednost: String) {
+    val putanja = System.getenv("GITHUB_OUTPUT")?.takeIf { it.isNotBlank() } ?: return
+    try {
+        File(putanja).appendText("$kljuc=$vrednost\n")
+    } catch (e: Exception) {
+        println("[ScraperJob] Nije uspelo pisanje GITHUB_OUTPUT: ${e.message}")
     }
 }
 

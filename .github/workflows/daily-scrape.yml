@@ -16,9 +16,13 @@ name: Daily cinema scrape
 
 on:
   schedule:
-    # GitHub cron je u UTC-u: 04:00 UTC = 06:00 po letnjem / 05:00 po zimskom beogradskom vremenu.
-    # GitHub ume da zakasni sa schedule run-ovima i do ~1h pri gužvi - nije bitno za dnevni posao.
-    - cron: "0 4 * * *"
+    # GitHub cron je u UTC-u. NAMERNO ne na pun sat: početak sata je najopterećeniji termin i
+    # GitHub tada ume da ODBACI zakazan run (desilo se 5. oktobra 2026 sa "0 4 * * *").
+    # Glavni: 03:17 UTC = 05:17 po letnjem / 04:17 po zimskom beogradskom vremenu.
+    - cron: "17 3 * * *"
+    # Rezervni: radi samo ako glavni danas ništa nije upisao (SKIP_IF_FRESH), inače se tiho
+    # završi bez mejla. 05:43 UTC = 07:43 po letnjem / 06:43 po zimskom.
+    - cron: "43 5 * * *"
   workflow_dispatch: # ručno pokretanje iz Actions taba
 
 concurrency:
@@ -62,6 +66,7 @@ jobs:
         id: scrape
         env:
           SCRAPE_REPORT_FILE: ${{ runner.temp }}/scrape-report.md
+          SKIP_IF_FRESH: ${{ github.event.schedule == '43 5 * * *' }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT || '6543' }}
           DB_NAME: ${{ secrets.DB_NAME || 'postgres' }}
@@ -75,7 +80,7 @@ jobs:
 
       # ---- Mejl posle SVAKOG run-a (uspeh ili neuspeh) ----
       - name: Prepare e-mail body
-        if: always()
+        if: always() && steps.scrape.outputs.skipped != 'true'
         env:
           REPORT: ${{ runner.temp }}/scrape-report.md
           STATUS: ${{ job.status == 'success' && '✅ Uspešno - svi bioskopi su vratili filmove' || '❌ Neuspešno - bar jedan bioskop je vratio 0 filmova ili je job pao' }}
@@ -94,7 +99,7 @@ jobs:
           } > "${{ runner.temp }}/mail-body.md"
 
       - name: Send e-mail
-        if: always()
+        if: always() && steps.scrape.outputs.skipped != 'true'
         uses: dawidd6/action-send-mail@v22
         with:
           server_address: smtp.gmail.com
