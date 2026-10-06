@@ -14,16 +14,24 @@
 
 name: Daily cinema scrape
 
+# GLAVNI okidač je SPOLJNI: cron-job.org svako jutro poziva GitHub API (workflow_dispatch sa
+# skip_if_fresh=true). GitHub-ov `schedule` se pokazao nepouzdanim - od 4. do 6. oktobra 2026 nije
+# okinuo nijednom, bez ikakve greške. Ostaje kao dodatni okidač u slučaju da ikad proradi.
+#
+# Svi AUTOMATSKI okidači (schedule i cron-job.org) šalju SKIP_IF_FRESH: koji god prvi stigne
+# uradi scraping, ostali se tiho završe bez mejla. Ručno "Run workflow" (podrazumevano
+# skip_if_fresh=false) uvek radi pun scraping.
 on:
   schedule:
-    # GitHub cron je u UTC-u. NAMERNO ne na pun sat: početak sata je najopterećeniji termin i
-    # GitHub tada ume da ODBACI zakazan run (desilo se 5. oktobra 2026 sa "0 4 * * *").
-    # Glavni: 03:17 UTC = 05:17 po letnjem / 04:17 po zimskom beogradskom vremenu.
+    # UTC, namerno ne na pun sat (najopterećeniji termin za GitHub schedule).
     - cron: "17 3 * * *"
-    # Rezervni: radi samo ako glavni danas ništa nije upisao (SKIP_IF_FRESH), inače se tiho
-    # završi bez mejla. 05:43 UTC = 07:43 po letnjem / 06:43 po zimskom.
     - cron: "43 5 * * *"
-  workflow_dispatch: # ručno pokretanje iz Actions taba
+  workflow_dispatch:
+    inputs:
+      skip_if_fresh:
+        description: "Preskoči ako u bazi već postoje današnji podaci (za automatske okidače)"
+        type: boolean
+        default: false
 
 concurrency:
   group: daily-scrape
@@ -66,7 +74,7 @@ jobs:
         id: scrape
         env:
           SCRAPE_REPORT_FILE: ${{ runner.temp }}/scrape-report.md
-          SKIP_IF_FRESH: ${{ github.event.schedule == '43 5 * * *' }}
+          SKIP_IF_FRESH: ${{ github.event_name == 'schedule' || inputs.skip_if_fresh }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT || '6543' }}
           DB_NAME: ${{ secrets.DB_NAME || 'postgres' }}
