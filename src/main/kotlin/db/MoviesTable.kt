@@ -40,6 +40,9 @@ object MoviesTable : Table("movies") {
     // keširan pre ove izmene, ili prvi upis pao pre TMDB detalja) - lenjo se popunjava u
     // MoviesRepository.ensureCached pri sledećoj interakciji sa tim filmom.
     val genres = text("genres").nullable()
+    // TMDB prosečna ocena (UX dorada oktobar 2026 - filter/sortiranje Biblioteke po TMDB oceni).
+    // Null za filmove keširane pre ove kolone - lenjo se popunjava u ensureCached, isto kao genres.
+    val voteAverage = double("vote_average").nullable()
     val lastUpdated = datetime("last_updated").nullable().clientDefault {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)
     }

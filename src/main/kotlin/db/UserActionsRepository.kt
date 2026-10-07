@@ -20,7 +20,12 @@ data class UserActionMovieRow(
     val posterPath: String?,
     val rating: Int?,
     val review: String?,
-    val createdAt: LocalDateTime?
+    val createdAt: LocalDateTime?,
+    // Podaci filma iz MoviesTable za filtere/sortiranje Biblioteke na Androidu (žanr, godina,
+    // TMDB ocena). Null/prazno za filmove čiji keš još nije dopunjen - videti ensureCached.
+    val genresJson: String? = null,
+    val releaseYear: Int? = null,
+    val voteAverage: Double? = null
 )
 
 data class FriendActivityRow(
@@ -61,7 +66,10 @@ class UserActionsRepository {
         posterPath = row[MoviesTable.posterUrl],
         rating = row[UserActionsTable.rating],
         review = row[UserActionsTable.review],
-        createdAt = row[UserActionsTable.createdAt]
+        createdAt = row[UserActionsTable.createdAt],
+        genresJson = row[MoviesTable.genres],
+        releaseYear = row[MoviesTable.releaseYear],
+        voteAverage = row[MoviesTable.voteAverage]
     )
 
     suspend fun getWatchlist(userId: String): List<UserActionMovieRow> = dbQuery {

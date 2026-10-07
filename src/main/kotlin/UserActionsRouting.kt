@@ -7,7 +7,9 @@ import com.milinko.db.User
 import com.milinko.db.UserActionMovieRow
 import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
+import com.milinko.db.decodeGenres
 import com.milinko.services.TmdbService
+import kotlinx.coroutines.launch
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
@@ -37,7 +39,11 @@ data class WatchlistItemDto(
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("added_at") val addedAt: Long,
     // Nema priority koncepta u stvarnoj šemi - uvek 0 (Android ga i dalje samo uslovno prikazuje).
-    val priority: Int = 0
+    val priority: Int = 0,
+    // Za filtere/sortiranje Biblioteke (žanr, godina, TMDB ocena) - videti MoviesTable.voteAverage.
+    val genres: List<GenreDto> = emptyList(),
+    @SerialName("release_year") val releaseYear: Int? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null
 )
 
 @Serializable
@@ -58,7 +64,10 @@ data class HistoryItemDto(
     val review: String? = null,
     @SerialName("watched_at") val watchedAt: Long,
     // Nema duration kolone u stvarnoj šemi - uvek 0 (Android ekran ga ni ne prikazuje).
-    val duration: Int = 0
+    val duration: Int = 0,
+    val genres: List<GenreDto> = emptyList(),
+    @SerialName("release_year") val releaseYear: Int? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null
 )
 
 @Serializable
@@ -126,11 +135,17 @@ private fun LocalDateTime?.toEpochMillisOrNow(): Long {
     return localDateTime.toInstant(TimeZone.UTC).toEpochMilliseconds()
 }
 
+private fun UserActionMovieRow.genreDtos(): List<GenreDto> =
+    decodeGenres(genresJson).map { GenreDto(it.id, it.name) }
+
 private fun UserActionMovieRow.toWatchlistDto() = WatchlistItemDto(
     tmdbId = tmdbId,
     title = title,
     posterPath = posterPath,
-    addedAt = createdAt.toEpochMillisOrNow()
+    addedAt = createdAt.toEpochMillisOrNow(),
+    genres = genreDtos(),
+    releaseYear = releaseYear,
+    voteAverage = voteAverage
 )
 
 private fun UserActionMovieRow.toHistoryDto() = HistoryItemDto(
@@ -139,8 +154,38 @@ private fun UserActionMovieRow.toHistoryDto() = HistoryItemDto(
     posterPath = posterPath,
     userRating = rating?.toDouble() ?: 0.0,
     review = review,
-    watchedAt = createdAt.toEpochMillisOrNow()
+    watchedAt = createdAt.toEpochMillisOrNow(),
+    genres = genreDtos(),
+    releaseYear = releaseYear,
+    voteAverage = voteAverage
 )
+
+// Koliko filmova sa nepotpunim kešom (bez žanrova/TMDB ocene) se dopuni po jednom učitavanju liste.
+private const val BACKFILL_LIMIT_PER_REQUEST = 10
+
+/**
+ * Filmovi dodati pre nego što su `genres`/`vote_average` kolone postojale nemaju te podatke, pa
+ * filteri Biblioteke na Androidu za njih ne bi radili. Umesto ručne migracije, svako učitavanje
+ * liste u pozadini dopuni do [BACKFILL_LIMIT_PER_REQUEST] takvih filmova (ensureCached) - odgovor
+ * se ne čeka na to; sledeće otvaranje Biblioteke već dobija dopunjene podatke.
+ */
+private fun Application.backfillMovieCache(
+    rows: List<UserActionMovieRow>,
+    moviesRepository: MoviesRepository,
+    tmdbService: TmdbService
+) {
+    val missing = rows.filter { it.genresJson == null || it.voteAverage == null }.take(BACKFILL_LIMIT_PER_REQUEST)
+    if (missing.isEmpty()) return
+    launch {
+        missing.forEach { row ->
+            try {
+                moviesRepository.ensureCached(row.tmdbId.toInt(), tmdbService)
+            } catch (e: Exception) {
+                println("[WARN] Dopuna keša filma ${row.tmdbId} nije uspela: ${e.message}")
+            }
+        }
+    }
+}
 
 private const val REVIEW_MAX_LENGTH = 1000
 
@@ -218,8 +263,9 @@ fun Application.configureUserActionsRouting(
                     get {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
-                        val items = userActionsRepository.getWatchlist(userId).map { it.toWatchlistDto() }
-                        call.respond(WatchlistResponseDto(items))
+                        val rows = userActionsRepository.getWatchlist(userId)
+                        call.application.backfillMovieCache(rows, moviesRepository, tmdbService)
+                        call.respond(WatchlistResponseDto(rows.map { it.toWatchlistDto() }))
                     }
 
                     post {
@@ -253,8 +299,9 @@ fun Application.configureUserActionsRouting(
                     get {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
-                        val items = userActionsRepository.getHistory(userId).map { it.toHistoryDto() }
-                        call.respond(HistoryResponseDto(items))
+                        val rows = userActionsRepository.getHistory(userId)
+                        call.application.backfillMovieCache(rows, moviesRepository, tmdbService)
+                        call.respond(HistoryResponseDto(rows.map { it.toHistoryDto() }))
                     }
 
                     post {

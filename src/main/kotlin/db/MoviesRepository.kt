@@ -40,13 +40,15 @@ class MoviesRepository {
         val existingRow = dbQuery {
             MoviesTable.select { MoviesTable.tmdbId eq tmdbId.toLong() }.firstOrNull()
         }
-        // Već postoji I ima genres popunjen - ništa se ne radi. Ako postoji ali genres fali
-        // (keširano pre Faze 4), nastavljamo dole da samo dopunimo tu kolonu.
-        if (existingRow != null && existingRow[MoviesTable.genres] != null) return
+        // Već postoji I ima genres + vote_average popunjene - ništa se ne radi. Ako postoji ali
+        // nešto od toga fali (keširano pre Faze 4 / pre vote_average kolone), nastavljamo dole da
+        // samo dopunimo te kolone.
+        if (existingRow != null && existingRow[MoviesTable.genres] != null && existingRow[MoviesTable.voteAverage] != null) return
 
         val detail = tmdbService.getMovieDetails(tmdbId)
             ?: throw IllegalArgumentException("Film sa tmdbId=$tmdbId ne postoji na TMDB-u")
         val genresJson = Json.encodeToString(detail.genres)
+        val voteAverageValue = detail.voteAverage
 
         dbQuery {
             if (existingRow == null) {
@@ -61,17 +63,23 @@ class MoviesRepository {
                         row[releaseYear] = detail.releaseDate?.take(4)?.toIntOrNull()
                         row[popularityScore] = detail.popularity
                         row[genres] = genresJson
+                        row[voteAverage] = voteAverageValue
                     }
                 } else {
                     // Neko drugi je upisao red dok smo čekali TMDB - samo dopuni genres ako fali.
                     MoviesTable.update({ (MoviesTable.tmdbId eq tmdbId.toLong()) and (MoviesTable.genres.isNull()) }) {
                         it[genres] = genresJson
                     }
+                    MoviesTable.update({ (MoviesTable.tmdbId eq tmdbId.toLong()) and (MoviesTable.voteAverage.isNull()) }) {
+                        it[voteAverage] = voteAverageValue
+                    }
                 }
             } else {
-                // Red postoji, samo mu je genres falio - backfill.
+                // Red postoji, ali mu je genres i/ili vote_average falio - backfill oba (genresJson
+                // je ionako svež sa TMDB-a, prepisivanje je bezopasno).
                 MoviesTable.update({ MoviesTable.tmdbId eq tmdbId.toLong() }) {
                     it[genres] = genresJson
+                    it[voteAverage] = voteAverageValue
                 }
             }
         }
