@@ -390,7 +390,11 @@ fun Application.configureFriendsRouting(
                                     tmdbId = movie.id!!,
                                     title = movie.title,
                                     posterPath = movie.posterPath,
-                                    matchReason = "Oboje volite ${movieSharedGenres.joinToString(" i ") { it.name }}",
+                                    matchReason = if (call.prefersEnglish()) {
+                                        "You both like ${movieSharedGenres.joinToString(" and ") { it.name }}"
+                                    } else {
+                                        "Oboje volite ${movieSharedGenres.joinToString(" i ") { it.name }}"
+                                    },
                                     scores = SuggestionScoresDto(
                                         yourMatch = yourMatch,
                                         theirMatch = theirMatch,

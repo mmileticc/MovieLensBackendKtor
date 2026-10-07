@@ -70,6 +70,9 @@ fun Application.module() {
         )
     }
 
+    // Poruke grešaka na engleskom za klijente koji šalju Accept-Language: en (videti Localization.kt).
+    install(ErrorMessageLocalization)
+
     // Klijentu NIKAD ne vraćamo poruku internog izuzetka - poruke Ktor HTTP klijenta sadrže pun URL
     // upstream poziva, a TMDB v3/OMDb ključevi idu baš u URL (?api_key=...). Pun detalj ide samo u
     // log. Izuzetak: IllegalArgumentException su naše validacione poruke namenjene korisniku.
