@@ -10,6 +10,7 @@ import com.milinko.services.GeminiOverloadedException
 import com.milinko.services.OmdbService
 import com.milinko.services.TmdbMovieMatch
 import com.milinko.services.TmdbService
+import com.milinko.util.TtlCache
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
@@ -127,6 +128,9 @@ private const val MIN_SLOTS_PER_GENRE = 2
 
 // Koliko TMDB detalj poziva /now-in-cinemas sme da radi istovremeno (pri praznom kešu).
 private const val NOW_IN_CINEMAS_TMDB_PARALLELISM = 8
+
+// Koliko dugo se gotov /now-in-cinemas odgovor služi iz memorije (ključ je vreme scrape-a).
+private const val NOW_IN_CINEMAS_CACHE_TTL_MS = 30 * 60 * 1000L
 
 /**
  * Umesto jednog "OR" TMDB discover upita preko sva 3 top žanra (sortiranog isključivo po globalnoj
@@ -248,6 +252,11 @@ fun Application.configureMovieRouting(
     localCinemaSemanticIndex: CinemaSemanticIndex,
     omdbService: OmdbService
 ) {
+    // Gotov /now-in-cinemas odgovor - bez ovoga je svaki zahtev (Home ga zove pri svakom pokretanju
+    // aplikacije) posle isteka TMDB keša pravio ~100 TMDB detalj poziva. Ključ je vreme poslednjeg
+    // scrape-a: novi upis repertoara automatski daje novi ključ, pa keš nikad ne kasni za bazom.
+    val nowInCinemasCache = TtlCache<String, NowInCinemasResponseDto>(ttlMillis = NOW_IN_CINEMAS_CACHE_TTL_MS, maxSize = 4)
+
     routing {
         route("/api/movies") {
             get("/search") {
@@ -323,6 +332,9 @@ fun Application.configureMovieRouting(
             // poziv po filmu - Semaphore ograničava paralelizam zbog TMDB rate limita.
             get("/now-in-cinemas") {
                 try {
+                    val cacheKey = scrapedMoviesRepository.getLatestScrapeTimestamp()?.toString() ?: "empty"
+                    nowInCinemasCache.get(cacheKey)?.let { return@get call.respond(it) }
+
                     val scraped = scrapedMoviesRepository.getAllScrapedMovies()
 
                     val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
@@ -355,7 +367,11 @@ fun Application.configureMovieRouting(
                         compareBy<NowInCinemasMovieDto> { it.isUpcoming }
                             .thenByDescending { it.cinemas.size }
                     )
-                    call.respond(NowInCinemasResponseDto(results))
+                    val response = NowInCinemasResponseDto(results)
+                    // Ne keširamo odgovor kojem fali većina filmova (npr. TMDB je pao usred zahteva) -
+                    // sledeći zahtev treba da pokuša ponovo, a ne da 30 minuta vraća krnju listu.
+                    if (results.size >= byTmdbId.size / 2) nowInCinemasCache.put(cacheKey, response)
+                    call.respond(response)
                 } catch (e: Exception) {
                     call.respondUpstreamError("/api/movies/now-in-cinemas", e, "Repertoar trenutno nije dostupan")
                 }

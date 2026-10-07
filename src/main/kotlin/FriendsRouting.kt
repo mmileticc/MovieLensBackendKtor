@@ -137,7 +137,11 @@ data class MovieSuggestionDto(
     val title: String,
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("match_reason") val matchReason: String,
-    val scores: SuggestionScoresDto = SuggestionScoresDto()
+    val scores: SuggestionScoresDto = SuggestionScoresDto(),
+    // UX dorada (oktobar 2026) - osnovni podaci da se o filmu može odlučiti bez ulaska u detalje.
+    @SerialName("release_date") val releaseDate: String? = null,
+    @SerialName("vote_average") val voteAverage: Double? = null,
+    @SerialName("genre_ids") val genreIds: List<Int> = emptyList()
 )
 
 @Serializable
@@ -148,7 +152,13 @@ data class MovieNightResponseDto(
     // (MovieNightViewModel) ranije nije imala ovu informaciju pa je rotirala kroz izmišljenih fiksnih
     // 5 stranica - sad umesto toga sledi ovaj flag i vraća se na stranicu 1 tek kad je stvarno nema
     // više šta novo da se ponudi.
-    @SerialName("has_more") val hasMore: Boolean = false
+    @SerialName("has_more") val hasMore: Boolean = false,
+    // UX dorada (oktobar 2026) - zaglavlje Movie Night ekrana: ime prijatelja, zajednički žanrovi
+    // (Android ih nudi i kao filter) i ukupno poklapanje ukusa. Isti za sve predloge - zato je ovde,
+    // a ne ponovljen u svakom MovieSuggestionDto.
+    @SerialName("friend_username") val friendUsername: String? = null,
+    @SerialName("shared_genres") val sharedGenres: List<GenreDto> = emptyList(),
+    @SerialName("match_score") val matchScore: Float = 0f
 )
 
 private fun LocalDateTime?.toEpochMillisOrNow(): Long {
@@ -344,18 +354,19 @@ fun Application.configureFriendsRouting(
                         val selfProfile = tasteProfileRepository.getTasteProfile(userId)
                         val friendProfile = tasteProfileRepository.getTasteProfile(friendId)
                         val match = compareTasteProfiles(selfProfile, friendProfile)
+                        val friendUsername = userDao.findById(friendId)?.username
 
                         if (match.sharedGenreIds.isEmpty()) {
                             // Nema preseka žanrova (nedovoljno zajedničkih ocena) - nema šta pametno
                             // da se predloži umesto da izmišljamo nasumične filmove.
-                            return@get call.respond(MovieNightResponseDto(emptyList()))
+                            return@get call.respond(MovieNightResponseDto(emptyList(), friendUsername = friendUsername))
                         }
 
                         val topGenreIds = match.sharedGenreIds.take(3)
                         val selfByGenreId = selfProfile.associateBy { it.genreId }
                         val friendByGenreId = friendProfile.associateBy { it.genreId }
+                        val sharedGenres = topGenreIds.map { GenreDto(it, selfByGenreId.getValue(it).genreName) }
                         val primaryGenreId = topGenreIds.first()
-                        val primaryGenreName = selfByGenreId.getValue(primaryGenreId).genreName
                         val yourMatch = (selfByGenreId.getValue(primaryGenreId).averageRating * 10.0).toFloat().coerceIn(0f, 100f)
                         val theirMatch = (friendByGenreId.getValue(primaryGenreId).averageRating * 10.0).toFloat().coerceIn(0f, 100f)
 
@@ -371,20 +382,35 @@ fun Application.configureFriendsRouting(
                             .filter { it.id != null && it.id.toLong() !in alreadySeen }
                             .take(10)
                             .map { movie ->
+                                // Razlog po filmu: koje od ZAJEDNIČKIH omiljenih žanrova ovaj film ima
+                                // (ranije ista rečenica sa glavnim žanrom za svaki predlog).
+                                val movieSharedGenres = sharedGenres.filter { it.id in movie.genreIds }
+                                    .ifEmpty { sharedGenres.take(1) }
                                 MovieSuggestionDto(
                                     tmdbId = movie.id!!,
                                     title = movie.title,
                                     posterPath = movie.posterPath,
-                                    matchReason = "Oboje volite $primaryGenreName",
+                                    matchReason = "Oboje volite ${movieSharedGenres.joinToString(" i ") { it.name }}",
                                     scores = SuggestionScoresDto(
                                         yourMatch = yourMatch,
                                         theirMatch = theirMatch,
                                         combinedScore = match.matchScore
-                                    )
+                                    ),
+                                    releaseDate = movie.releaseDate,
+                                    voteAverage = movie.voteAverage,
+                                    genreIds = movie.genreIds
                                 )
                             }
 
-                        call.respond(MovieNightResponseDto(suggestions, hasMore = page < discoverPage.totalPages))
+                        call.respond(
+                            MovieNightResponseDto(
+                                suggestions = suggestions,
+                                hasMore = page < discoverPage.totalPages,
+                                friendUsername = friendUsername,
+                                sharedGenres = sharedGenres,
+                                matchScore = match.matchScore
+                            )
+                        )
                     }
 
                     post("/{friendId}") {
