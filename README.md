@@ -90,7 +90,8 @@ with a manual delay), and persisted **per-cinema** — only chains that returned
 have their old rows replaced, so a single chain's website hiccup doesn't wipe its previously-good
 data. The semantic index is rebuilt from the fresh data afterward.
 
-**Personalized `/api/movies/featured`:** if a `userId` is supplied and that user has rated at
+**Personalized `/api/movies/featured`:** if the request carries a valid session JWT (optional
+authentication; the `userId` comes from the token, never from the query string) and that user has rated at
 least 3 movies, their top-3 genre affinities (`TasteProfileRepository`) are used to issue 3
 separate TMDB "discover by genre" queries, with slot counts proportional to affinity strength
 (stronger-liked genres get more of the 20-item page) — rather than a single OR query weighted
@@ -252,7 +253,7 @@ MovieLensBackendKtor/
 | POST | `/api/auth/firebase` | Exchange a Firebase ID token for a backend session JWT |
 | GET | `/api/movies/search?query=` | Title search (TMDB proxy) |
 | GET | `/api/movies/trending?page=` | Popular movies |
-| GET | `/api/movies/featured?userId=&page=` | Personalized or generic recommendations |
+| GET | `/api/movies/featured?page=` | Generic recommendations; personalized when an optional `Authorization: Bearer <jwt>` is sent |
 | GET | `/api/movies/genres` | All TMDB movie genres (id → name), cached 24h |
 | GET | `/api/movies/now-in-cinemas` | Full scraped repertoire with genres, overview, runtime and now/upcoming flag |
 | GET | `/api/movies/now-in-cinemas/semantic-search?q=&engine=` | Natural-language repertoire search |

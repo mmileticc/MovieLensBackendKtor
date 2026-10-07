@@ -237,8 +237,7 @@ fun Application.configureRouting(
                     println("[ERROR] Gemini overloaded: ${e.message}")
                     call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: IllegalStateException) {
-                    println("[ERROR] Upstream failure: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Upstream error"))
+                    call.respondUpstreamError("Upstream failure", e, "Analiza slike trenutno nije uspela")
                 } catch (e: Throwable) {
                     println("[ERROR] Unexpected: ${e.message}")
                     call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))

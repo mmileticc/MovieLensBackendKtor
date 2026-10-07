@@ -259,8 +259,7 @@ fun Application.configureMovieRouting(
                     val results = tmdbService.searchMovies(query)
                     call.respond(MovieListResponseDto(results.map { it.toDto() }))
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/search: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB pretraga nije uspela"))
+                    call.respondUpstreamError("/api/movies/search", e, "TMDB pretraga nije uspela")
                 }
             }
 
@@ -270,38 +269,43 @@ fun Application.configureMovieRouting(
                     val results = tmdbService.getPopularMovies(page)
                     call.respond(MovieListResponseDto(results.map { it.toDto() }))
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/trending: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB trending nije uspeo"))
+                    call.respondUpstreamError("/api/movies/trending", e, "TMDB trending nije uspeo")
                 }
             }
 
-            get("/featured") {
-
-                val userId = call.request.queryParameters["userId"]?.trim()?.takeIf { it.isNotBlank() }
-                val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
-                try {
-                    val personalized = userId?.let { uid ->
-                        val history = userActionsRepository.getHistory(uid)
-                        val totalRated = history.count { it.rating != null }
-                        if (totalRated < MIN_RATINGS_FOR_PERSONALIZATION) {
-                            null
-                        } else {
-                            val topGenres = tasteProfileRepository.getTasteProfile(uid).take(3)
-                            if (topGenres.isEmpty()) {
+            // Personalizacija ISKLJUČIVO za korisnika iz JWT-a (opciona autentikacija: bez tokena ruta
+            // radi i za neulogovane i vraća popularne filmove). Ranije je userId stizao kao javni query
+            // parametar - svako ko zna nečiji ID mogao je da dobije njegove predloge (iz kojih su
+            // izbačeni već gledani filmovi, tj. delimično otkrivaju istoriju gledanja). Query parametar
+            // `userId` koji stari/postojeći Android klijent i dalje šalje se ignoriše - AuthInterceptor
+            // ionako dodaje Bearer token uz svaki zahtev ulogovanog korisnika.
+            authenticate("auth-jwt", optional = true) {
+                get("/featured") {
+                    val userId = call.principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
+                    val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+                    try {
+                        val personalized = userId?.let { uid ->
+                            val history = userActionsRepository.getHistory(uid)
+                            val totalRated = history.count { it.rating != null }
+                            if (totalRated < MIN_RATINGS_FOR_PERSONALIZATION) {
                                 null
                             } else {
+                                val topGenres = tasteProfileRepository.getTasteProfile(uid).take(3)
+                                if (topGenres.isEmpty()) {
+                                    null
+                                } else {
 
-                                val alreadyWatched = history.map { it.tmdbId }.toSet()
-                                fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
-                                    .takeIf { it.isNotEmpty() }
+                                    val alreadyWatched = history.map { it.tmdbId }.toSet()
+                                    fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
+                                        .takeIf { it.isNotEmpty() }
+                                }
                             }
                         }
+                        val results = personalized ?: tmdbService.getPopularMovies(page)
+                        call.respond(MovieListResponseDto(results.map { it.toDto() }))
+                    } catch (e: Exception) {
+                        call.respondUpstreamError("/api/movies/featured", e, "TMDB featured nije uspeo")
                     }
-                    val results = personalized ?: tmdbService.getPopularMovies(page)
-                    call.respond(MovieListResponseDto(results.map { it.toDto() }))
-                } catch (e: Exception) {
-                    println("[ERROR] /api/movies/featured: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB featured nije uspeo"))
                 }
             }
 
@@ -310,8 +314,7 @@ fun Application.configureMovieRouting(
                     val genres = tmdbService.getGenres()
                     call.respond(GenreListResponseDto(genres.map { GenreDto(it.id, it.name) }))
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/genres: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB žanrovi nisu dostupni"))
+                    call.respondUpstreamError("/api/movies/genres", e, "TMDB žanrovi nisu dostupni")
                 }
             }
 
@@ -354,8 +357,7 @@ fun Application.configureMovieRouting(
                     )
                     call.respond(NowInCinemasResponseDto(results))
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/now-in-cinemas: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Repertoar trenutno nije dostupan"))
+                    call.respondUpstreamError("/api/movies/now-in-cinemas", e, "Repertoar trenutno nije dostupan")
                 }
             }
 
@@ -390,8 +392,7 @@ fun Application.configureMovieRouting(
                     println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
                     call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/now-in-cinemas/semantic-search: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "Semantička pretraga nije uspela"))
+                    call.respondUpstreamError("/api/movies/now-in-cinemas/semantic-search", e, "Semantička pretraga nije uspela")
                 }
             }
 
@@ -456,8 +457,7 @@ fun Application.configureMovieRouting(
                         )
                     )
                 } catch (e: Exception) {
-                    println("[ERROR] /api/movies/$tmdbId: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB detalji nisu uspeli"))
+                    call.respondUpstreamError("/api/movies/$tmdbId", e, "TMDB detalji nisu uspeli")
                 }
             }
         }
@@ -495,8 +495,7 @@ fun Application.configureMovieRouting(
                         )
                     )
                 } catch (e: Exception) {
-                    println("[ERROR] /api/people/$personId: ${e.message}")
-                    call.respond(HttpStatusCode.BadGateway, ErrorResponse(e.message ?: "TMDB podaci o glumcu nisu uspeli"))
+                    call.respondUpstreamError("/api/people/$personId", e, "TMDB podaci o glumcu nisu uspeli")
                 }
             }
         }

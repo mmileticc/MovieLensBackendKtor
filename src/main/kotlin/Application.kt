@@ -28,6 +28,7 @@ import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.statuspages.*
@@ -69,10 +70,25 @@ fun Application.module() {
         )
     }
 
+    // Klijentu NIKAD ne vraćamo poruku internog izuzetka - poruke Ktor HTTP klijenta sadrže pun URL
+    // upstream poziva, a TMDB v3/OMDb ključevi idu baš u URL (?api_key=...). Pun detalj ide samo u
+    // log. Izuzetak: IllegalArgumentException su naše validacione poruke namenjene korisniku.
     install(StatusPages) {
         exception<Throwable> { call, cause ->
-            val status = if (cause is IllegalArgumentException) HttpStatusCode.BadRequest else HttpStatusCode.InternalServerError
-            call.respond(status, ErrorResponse(error = cause.message ?: "Unexpected error"))
+            when (cause) {
+                is IllegalArgumentException ->
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = cause.message ?: "Neispravan zahtev"))
+                is BadRequestException -> {
+                    // Neispravno telo zahteva (npr. JSON koji ne odgovara DTO-u u call.receive).
+                    println("[WARN] Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Neispravan zahtev"))
+                }
+                else -> {
+                    println("[ERROR] Neobrađena greška na ${call.request.local.uri}: ${cause.message}")
+                    cause.printStackTrace()
+                    call.respond(HttpStatusCode.InternalServerError, ErrorResponse(error = "Došlo je do greške na serveru"))
+                }
+            }
         }
     }
 
@@ -178,6 +194,16 @@ fun Application.module() {
 
 @kotlinx.serialization.Serializable
 data class ErrorResponse(val error: String)
+
+/**
+ * 502 za neuspeo poziv ka spoljnom servisu (TMDB, Gemini...). Klijent dobija samo [publicMessage];
+ * poruka izuzetka ide isključivo u log, jer može da sadrži URL sa API ključem ili delove
+ * odgovora spoljnog servisa (videti napomenu kod StatusPages).
+ */
+suspend fun ApplicationCall.respondUpstreamError(logTag: String, e: Throwable, publicMessage: String) {
+    println("[ERROR] $logTag: ${e.message}")
+    respond(HttpStatusCode.BadGateway, ErrorResponse(publicMessage))
+}
 
 /**
  * Prvi HTTPS pozivi ka TMDB posle boot-a servera (DNS + TLS handshake) znaju da budu sporiji
