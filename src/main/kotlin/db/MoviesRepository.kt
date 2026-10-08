@@ -30,6 +30,11 @@ fun decodeGenres(genresJson: String?): List<TmdbGenre> {
  */
 class MoviesRepository {
 
+    /** Naslov iz lokalnog keša filmova (null ako film još nije keširan). */
+    suspend fun getTitle(tmdbId: Long): String? = dbQuery {
+        MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId }.firstOrNull()?.get(MoviesTable.title)
+    }
+
     /**
      * Osigurava da film sa datim tmdbId postoji u `movies` tabeli - ako ne postoji, povlači
      * detalje sa TMDB-a i upisuje ih. Ako VEĆ postoji ali mu fali `genres` (film keširan pre Faze

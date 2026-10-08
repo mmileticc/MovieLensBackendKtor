@@ -27,7 +27,7 @@ data class CommentRow(
 
 data class CommentsPage(val rows: List<CommentRow>, val hasMore: Boolean)
 
-data class LikeToggleResult(val liked: Boolean, val likeCount: Int)
+data class LikeToggleResult(val liked: Boolean, val likeCount: Int, val commentOwnerId: String, val movieId: Long)
 
 /**
  * DAO za javne komentare na film (E2.2 dorada, 3. septembar 2026 - videti CommentsTable.kt za
@@ -126,9 +126,9 @@ class CommentsRepository {
      * ako korisnik pokušava da lajkuje sopstveni komentar (korisnički zahtev - ne sme).
      */
     suspend fun toggleLike(commentId: Int, userId: String): LikeToggleResult = dbQuery {
-        val ownerId = CommentsTable.selectAll().where { CommentsTable.id eq commentId }
-            .firstOrNull()?.get(CommentsTable.userId)
+        val commentRow = CommentsTable.selectAll().where { CommentsTable.id eq commentId }.firstOrNull()
             ?: throw IllegalArgumentException("Komentar nije pronađen")
+        val ownerId = commentRow[CommentsTable.userId]
         if (ownerId == userId) {
             throw IllegalArgumentException("Ne možeš lajkovati sopstveni komentar")
         }
@@ -149,6 +149,6 @@ class CommentsRepository {
         }
 
         val likeCount = CommentLikesTable.selectAll().where { CommentLikesTable.commentId eq commentId }.count().toInt()
-        LikeToggleResult(liked = !alreadyLiked, likeCount = likeCount)
+        LikeToggleResult(liked = !alreadyLiked, likeCount = likeCount, commentOwnerId = ownerId, movieId = commentRow[CommentsTable.movieId])
     }
 }

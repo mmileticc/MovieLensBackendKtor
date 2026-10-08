@@ -79,6 +79,14 @@ class UserActionsRepository {
         }.map(::rowMapper)
     }
 
+    /** Parovi (userId, film) za sve korisnike kojima je neki od datih filmova na listi za gledanje. */
+    suspend fun getWatchlistEntriesForMovies(tmdbIds: Collection<Long>): List<Pair<String, UserActionMovieRow>> = dbQuery {
+        if (tmdbIds.isEmpty()) return@dbQuery emptyList()
+        joined.selectAll().where {
+            (UserActionsTable.actionType eq ACTION_WATCHLIST) and (UserActionsTable.movieId inList tmdbIds)
+        }.map { it[UserActionsTable.userId] to rowMapper(it) }
+    }
+
     suspend fun getHistory(userId: String): List<UserActionMovieRow> = dbQuery {
         joined.selectAll().where {
             (UserActionsTable.userId eq userId) and (UserActionsTable.actionType eq ACTION_WATCHED)

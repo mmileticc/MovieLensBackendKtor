@@ -7,6 +7,8 @@
 #   DB_PORT, DB_NAME, DB_USER           (opcioni - podrazumevano 6543 / postgres / postgres)
 #   MAIL_USERNAME, MAIL_PASSWORD        (Gmail adresa pošiljaoca + Gmail App Password)
 #   MAIL_TO                             (adresa na koju stiže izveštaj)
+#   FIREBASE_SERVICE_ACCOUNT_JSON       (opciono - isti JSON kao na Render-u; bez njega se ne šalju
+#                                        obaveštenja "film sa liste je u bioskopu")
 #
 # Posle svakog run-a stiže mejl sa statusom i tabelom po bioskopu. Run je crven ako bilo
 # koji bioskop vrati 0 filmova - znak da je sajt promenio strukturu. Ostali bioskopi su i
@@ -81,6 +83,7 @@ jobs:
           DB_USER: ${{ secrets.DB_USER || 'postgres' }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           # Chromium je već instaliran korakom iznad - bez ovoga Playwright.create() skida i
           # Firefox/WebKit koje nijedan skreper ne koristi.
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"

@@ -1,6 +1,10 @@
 package com.milinko.scraping
 
 import com.milinko.db.DatabaseFactory
+import com.milinko.db.DeviceTokensRepository
+import com.milinko.db.FirebaseAdminInitializer
+import com.milinko.db.NotificationsRepository
+import com.milinko.db.UserActionsRepository
 import com.milinko.db.ScrapedMoviesRepository
 import com.milinko.scraping.model.ScrapedMovie
 import com.milinko.scraping.scraper.ArenaCineplexScraper
@@ -11,6 +15,8 @@ import com.milinko.scraping.scraper.CineplexxScraper
 import com.milinko.scraping.scraper.MtsDvoranaScraper
 import com.milinko.scraping.scraper.RodaCineplexScraper
 import com.milinko.scraping.scraper.TuckwoodCineplexScraper
+import com.milinko.services.PushService
+import com.milinko.services.PushType
 import com.milinko.services.TmdbService
 import com.milinko.services.enrichWithTmdbIds
 import com.milinko.util.CINEMA_ZONE_ID
@@ -116,6 +122,13 @@ private suspend fun runScraperJob(): Int {
     }
     writeReport(buildReport(danasnjiDatum, poBioskopu, saIdjem, obogaceniFilmovi.size))
 
+    try {
+        notifyWatchlistMoviesInCinemas(obogaceniFilmovi)
+    } catch (e: Exception) {
+        // Obaveštenja nisu deo samog scraping-a - greška ne sme da obori job.
+        logger.warn("[ScraperJob] Obaveštenja o filmovima sa liste nisu poslata: ${e.message}")
+    }
+
     return if (prazni.isEmpty()) {
         logger.info("[ScraperJob] Svi bioskopi OK.")
         0
@@ -123,6 +136,47 @@ private suspend fun runScraperJob(): Int {
         logger.warn("[ScraperJob] Bioskopi bez rezultata: $prazni - ostali su upisani, job se označava kao neuspešan.")
         1
     }
+}
+
+// Najviše ovoliko obaveštenja "film sa liste je u bioskopu" po korisniku u jednom run-u - prvi run
+// posle uvođenja bi inače poslao po jedno za svaki film sa liste koji već igra.
+private const val MAX_CINEMA_NOTIFICATIONS_PER_USER = 3
+
+/**
+ * Korisnicima šalje obaveštenje kad film sa njihove liste za gledanje počne da igra (ne "uskoro").
+ * Svaki film se javlja jednom po korisniku (dedupe u notifications tabeli). Preskače se ako
+ * FIREBASE_SERVICE_ACCOUNT_JSON nije postavljen u CI-ju.
+ */
+private suspend fun notifyWatchlistMoviesInCinemas(filmovi: List<ScrapedMovie>) {
+    if (System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON").isNullOrBlank()) {
+        logger.info("[ScraperJob] FIREBASE_SERVICE_ACCOUNT_JSON nije postavljen - obaveštenja o filmovima sa liste se preskaču.")
+        return
+    }
+    FirebaseAdminInitializer.init()
+
+    val playingIds = filmovi.filter { !it.isUpcoming && it.tmdbId != null }.map { it.tmdbId!!.toLong() }.toSet()
+    val entries = UserActionsRepository().getWatchlistEntriesForMovies(playingIds)
+    val pushService = PushService(DeviceTokensRepository(), NotificationsRepository())
+
+    var sent = 0
+    entries.groupBy({ it.first }, { it.second }).forEach { (userId, rows) ->
+        var sentToUser = 0
+        for (row in rows) {
+            if (sentToUser >= MAX_CINEMA_NOTIFICATIONS_PER_USER) break
+            val delivered = pushService.notify(
+                userId = userId,
+                type = PushType.WATCHLIST_IN_CINEMA,
+                inboxText = "\"${row.title}\" sa tvoje liste sada igra u bioskopima",
+                data = mapOf("tmdbId" to row.tmdbId.toString(), "movieTitle" to row.title),
+                dedupeKey = "cinema:${row.tmdbId}"
+            )
+            if (delivered) {
+                sentToUser++
+                sent++
+            }
+        }
+    }
+    logger.info("[ScraperJob] Obaveštenja \"film sa liste je u bioskopu\": poslato $sent.")
 }
 
 /** Izlaz koraka za workflow (npr. `skipped=true` da se ne šalje mejl) - GITHUB_OUTPUT postoji samo u CI-ju. */

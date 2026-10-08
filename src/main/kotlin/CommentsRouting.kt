@@ -5,6 +5,8 @@ import com.milinko.db.CommentsRepository
 import com.milinko.db.FriendshipsRepository
 import com.milinko.db.MoviesRepository
 import com.milinko.db.UserDao
+import com.milinko.services.PushService
+import com.milinko.services.PushType
 import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -80,7 +82,8 @@ fun Application.configureCommentsRouting(
     commentsRepository: CommentsRepository,
     moviesRepository: MoviesRepository,
     friendshipsRepository: FriendshipsRepository,
-    userDao: UserDao
+    userDao: UserDao,
+    pushService: PushService
 ) {
     routing {
         // Čitanje komentara je javno (gost vidi komentare kao i ostatak detalja filma); sa tokenom
@@ -163,6 +166,20 @@ fun Application.configureCommentsRouting(
                     try {
                         val result = commentsRepository.toggleLike(commentId, callerId)
                         call.respond(LikeResponseDto(result.liked, result.likeCount))
+                        // Samo novi lajk (ne i uklanjanje); sopstveni komentar se ne može lajkovati.
+                        if (result.liked) {
+                            val name = userDao.findById(callerId)?.username ?: "Korisnik"
+                            val title = moviesRepository.getTitle(result.movieId)
+                            pushService.notifyAsync(
+                                result.commentOwnerId, PushType.COMMENT_LIKED, "$name je lajkovao tvoj komentar",
+                                buildMap {
+                                    put("actorId", callerId)
+                                    put("actorName", name)
+                                    put("tmdbId", result.movieId.toString())
+                                    title?.let { put("movieTitle", it) }
+                                }
+                            )
+                        }
                     } catch (e: IllegalArgumentException) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Nevalidan zahtev"))
                     }

@@ -77,10 +77,11 @@ object DatabaseFactory {
                 // CommentsTable.kt/CommentLikesTable.kt za obrazloženje.
                 CommentsTable,
                 CommentLikesTable,
-                UserAvatarsTable
+                UserAvatarsTable,
+                DeviceTokensTable
             )
         }
-        logger.info("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings, movie_comments, comment_likes, user_avatars).")
+        logger.info("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings, movie_comments, comment_likes, user_avatars, device_tokens).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)

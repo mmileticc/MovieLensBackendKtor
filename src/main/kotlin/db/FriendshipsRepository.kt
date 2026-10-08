@@ -14,6 +14,9 @@ import org.jetbrains.exposed.sql.update
 private const val STATUS_PENDING = "PENDING"
 private const val STATUS_ACCEPTED = "ACCEPTED"
 
+/** Ishod slanja zahteva - određuje koje obaveštenje dobija druga strana. */
+enum class SendRequestResult { SENT, ACCEPTED_EXISTING, ALREADY_EXISTS }
+
 /** Status prijateljstva iz perspektive `userId` u odnosu na `otherUserId`. */
 enum class FriendshipStatus {
     NONE,
@@ -84,7 +87,7 @@ class FriendshipsRepository {
      * smer), umesto duplog reda odmah prihvata postojeći - uobičajeno ponašanje ("obostrani
      * zahtev" = odmah prijateljstvo).
      */
-    suspend fun sendRequest(userId: String, otherUserId: String): Unit = dbQuery {
+    suspend fun sendRequest(userId: String, otherUserId: String): SendRequestResult = dbQuery {
         require(userId != otherUserId) { "Ne možeš poslati zahtev samom sebi" }
 
         val reverseRequest = FriendshipsTable.selectAll().where {
@@ -97,7 +100,7 @@ class FriendshipsRepository {
             FriendshipsTable.update({
                 (FriendshipsTable.senderId eq otherUserId) and (FriendshipsTable.receiverId eq userId)
             }) { it[status] = STATUS_ACCEPTED }
-            return@dbQuery
+            return@dbQuery SendRequestResult.ACCEPTED_EXISTING
         }
 
         val alreadyExists = FriendshipsTable.selectAll().where {
@@ -105,13 +108,13 @@ class FriendshipsRepository {
                 ((FriendshipsTable.senderId eq otherUserId) and (FriendshipsTable.receiverId eq userId))
         }.empty().not()
 
-        if (!alreadyExists) {
-            FriendshipsTable.insert { row ->
-                row[senderId] = userId
-                row[receiverId] = otherUserId
-                row[status] = STATUS_PENDING
-            }
+        if (alreadyExists) return@dbQuery SendRequestResult.ALREADY_EXISTS
+        FriendshipsTable.insert { row ->
+            row[senderId] = userId
+            row[receiverId] = otherUserId
+            row[status] = STATUS_PENDING
         }
+        SendRequestResult.SENT
     }
 
     /** Prihvata dolazni zahtev - samo primalac (userId) sme da prihvati. */

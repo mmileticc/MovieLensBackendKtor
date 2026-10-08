@@ -4,6 +4,9 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.milinko.db.AvatarRepository
 import com.milinko.db.CommentsRepository
+import com.milinko.db.DeviceTokensRepository
+import com.milinko.db.NotificationsRepository
+import com.milinko.services.PushService
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
 import com.milinko.db.FriendshipsRepository
@@ -129,6 +132,9 @@ fun Application.module() {
     val commentsRepository = CommentsRepository()
     val avatarRepository = AvatarRepository()
     val movieEmbeddingsRepository = MovieEmbeddingsRepository()
+    val deviceTokensRepository = DeviceTokensRepository()
+    val notificationsRepository = NotificationsRepository()
+    val pushService = PushService(deviceTokensRepository, notificationsRepository)
 
     // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
     val apiKey = System.getenv("GEMINI_API_KEY")
@@ -162,8 +168,9 @@ fun Application.module() {
     configureRouting(geminiService, tmdbService, scrapedMoviesRepository, userDao, jwtSigningKey)
     configureMovieRouting(tmdbService, friendshipsRepository, userActionsRepository, tasteProfileRepository, scrapedMoviesRepository, geminiCinemaSemanticIndex, localCinemaSemanticIndex, omdbService)
     configureUserActionsRouting(tmdbService, userActionsRepository, moviesRepository, tasteProfileRepository, userDao, friendshipsRepository)
-    configureFriendsRouting(friendshipsRepository, userDao, userActionsRepository, tasteProfileRepository, tmdbService)
-    configureCommentsRouting(tmdbService, commentsRepository, moviesRepository, friendshipsRepository, userDao)
+    configureFriendsRouting(friendshipsRepository, userDao, userActionsRepository, tasteProfileRepository, tmdbService, pushService)
+    configureCommentsRouting(tmdbService, commentsRepository, moviesRepository, friendshipsRepository, userDao, pushService)
+    configureNotificationsRouting(deviceTokensRepository, notificationsRepository)
     configureAvatarRouting(avatarRepository)
     migrateInlineAvatars(avatarRepository)
 }
@@ -396,21 +403,18 @@ fun Application.configureAuthentication(jwtSigningKey: String) {
     install(Authentication) {
         jwt("auth-jwt") {
             realm = "MovieLens Backend"
+            // Token bez issuer/audience (izdat pre oktobra 2026) se odbija sa 401; Android ga tada
+            // sam zameni novim (TokenAuthenticator), bez ponovne prijave korisnika.
             verifier(
                 JWT.require(Algorithm.HMAC256(jwtSigningKey))
+                    .withIssuer(JWT_ISSUER)
+                    .withAudience(JWT_AUDIENCE)
                     .build()
             )
             validate { credential ->
                 try {
                     val userId = credential.payload.subject
-                    // Prelazni period: tokeni izdati pre uvođenja issuer/audience claim-ova još
-                    // važe do 24h, pa se claim proverava samo ako postoji. Kad svi stari tokeni
-                    // isteknu, prebaciti na withIssuer/withAudience u verifier-u iznad.
-                    val issuer = credential.payload.issuer
-                    val audience = credential.payload.audience
-                    val issuerOk = issuer == null || issuer == JWT_ISSUER
-                    val audienceOk = audience.isNullOrEmpty() || JWT_AUDIENCE in audience
-                    if (userId != null && userId.isNotEmpty() && issuerOk && audienceOk) {
+                    if (userId != null && userId.isNotEmpty()) {
                         JWTPrincipal(credential.payload)
                     } else {
                         null

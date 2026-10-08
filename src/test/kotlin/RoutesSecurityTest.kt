@@ -105,12 +105,12 @@ class RoutesSecurityTest {
     }
 
     @Test
-    fun `old token without issuer is still accepted during the transition`() = secureApp {
-        // Tuđi userId -> 403 znači da je token PRIHVAĆEN (inače bi bilo 401), a da do baze nije došlo.
-        val response = client.get("/api/users/u2/watchlist") {
+    fun `old token without issuer is rejected`() = secureApp {
+        // Android na 401 sam pribavi novi token (TokenAuthenticator), korisnik se ne odjavljuje.
+        val response = client.get("/api/users/u1/watchlist") {
             header(HttpHeaders.Authorization, "Bearer ${token("u1", issuer = null)}")
         }
-        assertEquals(HttpStatusCode.Forbidden, response.status)
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
     }
 
     @Test

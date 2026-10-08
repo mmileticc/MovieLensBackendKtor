@@ -2,11 +2,14 @@ package com.milinko
 
 import com.milinko.db.FriendshipStatus
 import com.milinko.db.FriendshipsRepository
+import com.milinko.db.SendRequestResult
 import com.milinko.db.User
 import com.milinko.db.UserActionsRepository
 import com.milinko.db.UserDao
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.compareTasteProfiles
+import com.milinko.services.PushService
+import com.milinko.services.PushType
 import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -181,8 +184,11 @@ fun Application.configureFriendsRouting(
     userDao: UserDao,
     userActionsRepository: UserActionsRepository,
     tasteProfileRepository: TasteProfileRepository,
-    tmdbService: TmdbService
+    tmdbService: TmdbService,
+    pushService: PushService
 ) {
+    suspend fun displayName(userId: String) = userDao.findById(userId)?.username ?: "Korisnik"
+
     routing {
         authenticate("auth-jwt") {
 
@@ -430,10 +436,23 @@ fun Application.configureFriendsRouting(
 
                         when (req.action.lowercase()) {
                             "add" -> {
-                                try {
+                                val result = try {
                                     friendshipsRepository.sendRequest(userId, friendId)
                                 } catch (e: IllegalArgumentException) {
                                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Nevalidan zahtev"))
+                                }
+                                val name = displayName(userId)
+                                when (result) {
+                                    SendRequestResult.SENT -> pushService.notifyAsync(
+                                        friendId, PushType.FRIEND_REQUEST, "$name ti je poslao zahtev za prijateljstvo",
+                                        mapOf("actorId" to userId, "actorName" to name)
+                                    )
+                                    // Obostrani zahtev -> prijateljstvo je odmah prihvaćeno.
+                                    SendRequestResult.ACCEPTED_EXISTING -> pushService.notifyAsync(
+                                        friendId, PushType.FRIEND_ACCEPTED, "$name je prihvatio tvoj zahtev za prijateljstvo",
+                                        mapOf("actorId" to userId, "actorName" to name)
+                                    )
+                                    SendRequestResult.ALREADY_EXISTS -> Unit
                                 }
                             }
                             "accept" -> {
@@ -441,6 +460,11 @@ fun Application.configureFriendsRouting(
                                 if (!accepted) {
                                     return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("Nema zahteva za prihvatanje"))
                                 }
+                                val name = displayName(userId)
+                                pushService.notifyAsync(
+                                    friendId, PushType.FRIEND_ACCEPTED, "$name je prihvatio tvoj zahtev za prijateljstvo",
+                                    mapOf("actorId" to userId, "actorName" to name)
+                                )
                             }
                             "reject" -> friendshipsRepository.removeFriendship(userId, friendId)
                             else -> return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nepoznata akcija: ${req.action}"))
