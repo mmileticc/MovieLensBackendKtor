@@ -88,7 +88,7 @@ class CommentsRepository {
                         id = row[CommentsTable.id],
                         userId = row[CommentsTable.userId],
                         username = row[UsersTable.username],
-                        avatarUrl = row[UsersTable.avatarUrl],
+                        avatarUrl = publicAvatarUrl(row[UsersTable.avatarUrl]),
                         movieId = row[CommentsTable.movieId],
                         body = row[CommentsTable.body],
                         createdAt = row[CommentsTable.createdAt],

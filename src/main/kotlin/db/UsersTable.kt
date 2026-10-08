@@ -117,7 +117,7 @@ private fun ResultRow.toUser() = User(
     firebaseUid = this[UsersTable.firebaseUid],
     username = this[UsersTable.username],
     email = this[UsersTable.email],
-    avatarUrl = this[UsersTable.avatarUrl],
+    avatarUrl = publicAvatarUrl(this[UsersTable.avatarUrl]),
     bio = this[UsersTable.bio],
     subscriptionTier = this[UsersTable.subscriptionTier],
     roles = this[UsersTable.roles],
@@ -242,9 +242,8 @@ class UserDao {
     /**
      * Ažurira username (jedinstven među korisnicima, case-insensitive - kao Instagram handle),
      * bio ("mini status" ispod imena) i opciono avatar (base64 `data:image/...` URI - Android
-     * kompresuje/downsample-uje sliku pre slanja, videti AvatarImage.kt). `avatar == null` znači
-     * "ne diraj postojeću sliku" (korisnik menja samo username/bio, nije birao novu sliku) - kolona
-     * se piše samo kad je stvarno prosleđena nova vrednost. Baca `IllegalArgumentException` za sve
+     * kompresuje/downsample-uje sliku pre slanja, videti AvatarImage.kt). Avatar se menja samo kad
+     * stigne nova slika kao data-URI (sve ostalo, uključujući `null`, znači "ne diraj postojeću"). Baca `IllegalArgumentException` za sve
      * validacione greške (dužina/karakteri/zauzeto ime/prevelika slika) - rute ga hvataju eksplicitno
      * i vraćaju 400 sa porukom (isti obrazac kao `FriendshipsRepository.sendRequest`).
      */
@@ -270,8 +269,11 @@ class UserDao {
         UsersTable.update({ UsersTable.id eq userId }) { stmt ->
             stmt[UsersTable.username] = trimmedUsername
             stmt[UsersTable.bio] = trimmedBio
-            if (avatar != null) {
-                stmt[UsersTable.avatarUrl] = avatar
+            // Samo nova slika (data-URI) menja avatar: slika ide u user_avatars, a ovde samo
+            // putanja. Klijent uz svako čuvanje vraća i trenutni URL avatara - to se ignoriše, da
+            // u bazu ne bi ušao pun URL (ili proizvoljan URL koji klijent pošalje).
+            if (avatar != null && avatar.startsWith("data:")) {
+                stmt[UsersTable.avatarUrl] = storeAvatarFromDataUri(userId, avatar)
             }
         }
 

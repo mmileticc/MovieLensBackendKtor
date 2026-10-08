@@ -2,6 +2,7 @@ package com.milinko
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import com.milinko.db.AvatarRepository
 import com.milinko.db.CommentsRepository
 import com.milinko.db.DatabaseFactory
 import com.milinko.db.FirebaseAdminInitializer
@@ -206,6 +207,10 @@ fun Application.module() {
     configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
     configureCommentsRouting(tmdbService, CommentsRepository(), MoviesRepository(), FriendshipsRepository(), userDao)
+
+    val avatarRepository = AvatarRepository()
+    configureAvatarRouting(avatarRepository)
+    migrateInlineAvatars(avatarRepository)
 }
 
 const val JWT_ISSUER = "movienee-backend"
@@ -222,6 +227,18 @@ data class ErrorResponse(val error: String)
 suspend fun ApplicationCall.respondUpstreamError(logTag: String, e: Throwable, publicMessage: String) {
     println("[ERROR] $logTag: ${e.message}")
     respond(HttpStatusCode.BadGateway, ErrorResponse(publicMessage))
+}
+
+/** Jednokratno prebacivanje starih base64 avatara iz `users.avatar_url` u `user_avatars`. */
+fun Application.migrateInlineAvatars(avatarRepository: AvatarRepository) {
+    launch {
+        try {
+            val migrated = avatarRepository.migrateInlineAvatars()
+            if (migrated > 0) println("[AVATAR] Prebačeno $migrated avatara iz users.avatar_url u user_avatars.")
+        } catch (e: Exception) {
+            println("[ERROR] Migracija avatara nije uspela (pokušaće ponovo pri sledećem startu): ${e.message}")
+        }
+    }
 }
 
 /**
