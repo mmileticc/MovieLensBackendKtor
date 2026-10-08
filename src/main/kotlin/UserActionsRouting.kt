@@ -193,7 +193,7 @@ private fun Application.backfillMovieCache(
 private const val REVIEW_MAX_LENGTH = 1000
 
 /** Zaokružuje na najbliži ceo broj i ograničava na [1,10] (DB CHECK opseg). Null ostaje null. */
-private fun Double?.toRatingIntOrNull(): Int? {
+internal fun Double?.toRatingIntOrNull(): Int? {
     if (this == null) return null
     return Math.round(this).toInt().coerceIn(1, 10)
 }

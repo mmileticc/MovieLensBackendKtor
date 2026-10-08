@@ -84,6 +84,13 @@ fun translateToEnglish(message: String): String {
     return message
 }
 
+/**
+ * Odgovori koje šalje StatusPages ne prolaze kroz [ErrorMessageLocalization] (njegov onCallRespond
+ * se tad već izvršio), pa ih StatusPages prevodi sam preko ove funkcije.
+ */
+fun ApplicationCall.localizedError(message: String): ErrorResponse =
+    ErrorResponse(if (prefersEnglish()) translateToEnglish(message) else message)
+
 /** Prevodi `ErrorResponse` telo na engleski za klijente koji šalju `Accept-Language: en`. */
 val ErrorMessageLocalization = createApplicationPlugin(name = "ErrorMessageLocalization") {
     onCallRespond { call, _ ->

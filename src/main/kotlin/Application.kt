@@ -74,33 +74,8 @@ fun Application.module() {
         )
     }
 
-    // Poruke grešaka na engleskom za klijente koji šalju Accept-Language: en (videti Localization.kt).
-    install(ErrorMessageLocalization)
+    configureErrorHandling()
 
-    // Klijentu NIKAD ne vraćamo poruku internog izuzetka - poruke Ktor HTTP klijenta sadrže pun URL
-    // upstream poziva, a TMDB v3/OMDb ključevi idu baš u URL (?api_key=...). Pun detalj ide samo u
-    // log. Izuzetak: IllegalArgumentException su naše validacione poruke namenjene korisniku.
-    install(StatusPages) {
-        exception<Throwable> { call, cause ->
-            when (cause) {
-                is IllegalArgumentException ->
-                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = cause.message ?: "Neispravan zahtev"))
-                is BadRequestException -> {
-                    // Neispravno telo zahteva (npr. JSON koji ne odgovara DTO-u u call.receive).
-                    logger.warn("Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
-                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Neispravan zahtev"))
-                }
-                else -> {
-                    logger.error("Neobrađena greška na ${call.request.local.uri}: ${cause.message}", cause)
-                    call.respond(HttpStatusCode.InternalServerError, ErrorResponse(error = "Došlo je do greške na serveru"))
-                }
-            }
-        }
-        // RateLimit plugin vraća 429 bez tela - klijent dobija poruku kao i za ostale greške.
-        status(HttpStatusCode.TooManyRequests) { call, status ->
-            call.respond(status, ErrorResponse(error = "Previše zahteva. Pokušaj ponovo za minut."))
-        }
-    }
 
     install(CORS) {
         // ALLOWED_ORIGINS: opciona ENV promenljiva, comma-separated lista dozvoljenih origina
@@ -138,34 +113,7 @@ fun Application.module() {
         ?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("APP_JWT_SIGNING_KEY nije postavljen ili je prazan")
 
-    install(Authentication) {
-        jwt("auth-jwt") {
-            realm = "MovieLens Backend"
-            verifier(
-                JWT.require(Algorithm.HMAC256(jwtSigningKey))
-                    .build()
-            )
-            validate { credential ->
-                try {
-                    val userId = credential.payload.subject
-                    // Prelazni period: tokeni izdati pre uvođenja issuer/audience claim-ova još
-                    // važe do 24h, pa se claim proverava samo ako postoji. Kad svi stari tokeni
-                    // isteknu, prebaciti na withIssuer/withAudience u verifier-u iznad.
-                    val issuer = credential.payload.issuer
-                    val audience = credential.payload.audience
-                    val issuerOk = issuer == null || issuer == JWT_ISSUER
-                    val audienceOk = audience.isNullOrEmpty() || JWT_AUDIENCE in audience
-                    if (userId != null && userId.isNotEmpty() && issuerOk && audienceOk) {
-                        JWTPrincipal(credential.payload)
-                    } else {
-                        null
-                    }
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        }
-    }
+    configureAuthentication(jwtSigningKey)
 
     configureRateLimiting()
 
@@ -407,5 +355,70 @@ suspend fun refreshSemanticIndices(
         }
     } else {
         logger.info("ENABLE_LOCAL_EMBEDDING nije postavljen na 'true' - lokalni MiniLM indeks se ne puni (ostaje prazan, engine=local vraća praznu listu).")
+    }
+}
+/**
+ * Poruke grešaka (lokalizacija + StatusPages). Izdvojeno iz [module] da testovi ruta dobiju isto
+ * ponašanje bez baze i spoljnih servisa.
+ */
+fun Application.configureErrorHandling() {
+    // Poruke grešaka na engleskom za klijente koji šalju Accept-Language: en (videti Localization.kt).
+    install(ErrorMessageLocalization)
+
+    // Klijentu NIKAD ne vraćamo poruku internog izuzetka - poruke Ktor HTTP klijenta sadrže pun URL
+    // upstream poziva, a TMDB v3/OMDb ključevi idu baš u URL (?api_key=...). Pun detalj ide samo u
+    // log. Izuzetak: IllegalArgumentException su naše validacione poruke namenjene korisniku.
+    install(StatusPages) {
+        exception<Throwable> { call, cause ->
+            when (cause) {
+                is IllegalArgumentException ->
+                    call.respond(HttpStatusCode.BadRequest, call.localizedError(cause.message ?: "Neispravan zahtev"))
+                is BadRequestException -> {
+                    // Neispravno telo zahteva (npr. JSON koji ne odgovara DTO-u u call.receive).
+                    logger.warn("Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
+                    call.respond(HttpStatusCode.BadRequest, call.localizedError("Neispravan zahtev"))
+                }
+                else -> {
+                    logger.error("Neobrađena greška na ${call.request.local.uri}: ${cause.message}", cause)
+                    call.respond(HttpStatusCode.InternalServerError, call.localizedError("Došlo je do greške na serveru"))
+                }
+            }
+        }
+        // RateLimit plugin vraća 429 bez tela - klijent dobija poruku kao i za ostale greške.
+        status(HttpStatusCode.TooManyRequests) { call, status ->
+            call.respond(status, call.localizedError("Previše zahteva. Pokušaj ponovo za minut."))
+        }
+    }
+}
+
+/** JWT autentikacija ("auth-jwt"); izdvojeno iz [module] iz istog razloga kao [configureErrorHandling]. */
+fun Application.configureAuthentication(jwtSigningKey: String) {
+    install(Authentication) {
+        jwt("auth-jwt") {
+            realm = "MovieLens Backend"
+            verifier(
+                JWT.require(Algorithm.HMAC256(jwtSigningKey))
+                    .build()
+            )
+            validate { credential ->
+                try {
+                    val userId = credential.payload.subject
+                    // Prelazni period: tokeni izdati pre uvođenja issuer/audience claim-ova još
+                    // važe do 24h, pa se claim proverava samo ako postoji. Kad svi stari tokeni
+                    // isteknu, prebaciti na withIssuer/withAudience u verifier-u iznad.
+                    val issuer = credential.payload.issuer
+                    val audience = credential.payload.audience
+                    val issuerOk = issuer == null || issuer == JWT_ISSUER
+                    val audienceOk = audience.isNullOrEmpty() || JWT_AUDIENCE in audience
+                    if (userId != null && userId.isNotEmpty() && issuerOk && audienceOk) {
+                        JWTPrincipal(credential.payload)
+                    } else {
+                        null
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
     }
 }

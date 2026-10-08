@@ -106,7 +106,7 @@ data class MovieDetailDto(
 )
 
 /** Haversine formula - distanca u km između dve geo-tačke (korisnik i bioskop). */
-private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+internal fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val earthRadiusKm = 6371.0
     val dLat = Math.toRadians(lat2 - lat1)
     val dLon = Math.toRadians(lon2 - lon1)
@@ -144,8 +144,8 @@ private const val NOW_IN_CINEMAS_CACHE_TTL_MS = 30 * 60 * 1000L
  * treći/najslabiji žanr ostane vidljivo zastupljen. Isti film može da se pojavi u rezultatima više
  * žanrova (npr. film koji je i Akcija i Triler) - `seen` sprečava duplikate u finalnoj listi.
  */
-private suspend fun fetchBlendedByGenreAffinity(
-    tmdbService: TmdbService,
+internal suspend fun fetchBlendedByGenreAffinity(
+    fetchGenrePage: suspend (genreId: Int, page: Int) -> List<TmdbMovieMatch>,
     genres: List<GenreAffinity>,
     page: Int,
     excludeTmdbIds: Set<Long>
@@ -163,9 +163,12 @@ private suspend fun fetchBlendedByGenreAffinity(
     val result = mutableListOf<TmdbMovieMatch>()
     for ((index, genre) in genres.withIndex()) {
         val slots = slotsByGenre[index]
-        val fromGenre = tmdbService.getMoviesByGenres(listOf(genre.genreId), page)
-            .filter { it.id != null && it.id.toLong() !in excludeTmdbIds && seen.add(it.id.toLong()) }
+        // `seen` se puni tek posle take(): film koji ne uđe u kvotu ovog žanra ostaje dostupan
+        // sledećem žanru.
+        val fromGenre = fetchGenrePage(genre.genreId, page)
+            .filter { it.id != null && it.id.toLong() !in excludeTmdbIds && it.id.toLong() !in seen }
             .take(slots)
+        fromGenre.forEach { seen.add(it.id!!.toLong()) }
         result += fromGenre
     }
     return result
@@ -310,7 +313,10 @@ fun Application.configureMovieRouting(
                                     } else {
 
                                         val alreadyWatched = history.map { it.tmdbId }.toSet()
-                                        fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
+                                        fetchBlendedByGenreAffinity(
+                                            { genreId, p -> tmdbService.getMoviesByGenres(listOf(genreId), p) },
+                                            topGenres, page, alreadyWatched
+                                        )
                                             .takeIf { it.isNotEmpty() }
                                     }
                                 }
