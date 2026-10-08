@@ -6,6 +6,7 @@ import com.milinko.services.TmdbService
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
 import org.jetbrains.exposed.sql.and
@@ -38,7 +39,7 @@ class MoviesRepository {
      */
     suspend fun ensureCached(tmdbId: Int, tmdbService: TmdbService) {
         val existingRow = dbQuery {
-            MoviesTable.select { MoviesTable.tmdbId eq tmdbId.toLong() }.firstOrNull()
+            MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId.toLong() }.firstOrNull()
         }
         // Već postoji I ima genres + vote_average popunjene - ništa se ne radi. Ako postoji ali
         // nešto od toga fali (keširano pre Faze 4 / pre vote_average kolone), nastavljamo dole da
@@ -54,7 +55,7 @@ class MoviesRepository {
             if (existingRow == null) {
                 // Ponovna provera unutar transakcije - blaga zaštita od retke trke (dva paralelna
                 // zahteva za isti film istovremeno).
-                val stillMissing = MoviesTable.select { MoviesTable.tmdbId eq tmdbId.toLong() }.empty()
+                val stillMissing = MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId.toLong() }.empty()
                 if (stillMissing) {
                     MoviesTable.insert { row ->
                         row[MoviesTable.tmdbId] = tmdbId.toLong()

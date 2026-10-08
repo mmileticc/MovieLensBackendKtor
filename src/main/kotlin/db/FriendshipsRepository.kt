@@ -1,6 +1,7 @@
 package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
@@ -41,7 +42,7 @@ private fun userFromRow(row: org.jetbrains.exposed.sql.ResultRow) = User(
 class FriendshipsRepository {
 
     suspend fun getFriendshipStatus(userId: String, otherUserId: String): FriendshipStatus = dbQuery {
-        val row = FriendshipsTable.select {
+        val row = FriendshipsTable.selectAll().where {
             ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId eq otherUserId)) or
                 ((FriendshipsTable.senderId eq otherUserId) and (FriendshipsTable.receiverId eq userId))
         }.firstOrNull() ?: return@dbQuery FriendshipStatus.NONE
@@ -56,7 +57,7 @@ class FriendshipsRepository {
     suspend fun getFriendshipStatuses(userId: String, otherUserIds: List<String>): Map<String, FriendshipStatus> {
         if (otherUserIds.isEmpty()) return emptyMap()
         val found = dbQuery {
-            FriendshipsTable.select {
+            FriendshipsTable.selectAll().where {
                 ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId inList otherUserIds)) or
                     ((FriendshipsTable.receiverId eq userId) and (FriendshipsTable.senderId inList otherUserIds))
             }.associate { row ->
@@ -86,7 +87,7 @@ class FriendshipsRepository {
     suspend fun sendRequest(userId: String, otherUserId: String): Unit = dbQuery {
         require(userId != otherUserId) { "Ne možeš poslati zahtev samom sebi" }
 
-        val reverseRequest = FriendshipsTable.select {
+        val reverseRequest = FriendshipsTable.selectAll().where {
             (FriendshipsTable.senderId eq otherUserId) and
                 (FriendshipsTable.receiverId eq userId) and
                 (FriendshipsTable.status eq STATUS_PENDING)
@@ -99,7 +100,7 @@ class FriendshipsRepository {
             return@dbQuery
         }
 
-        val alreadyExists = FriendshipsTable.select {
+        val alreadyExists = FriendshipsTable.selectAll().where {
             ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId eq otherUserId)) or
                 ((FriendshipsTable.senderId eq otherUserId) and (FriendshipsTable.receiverId eq userId))
         }.empty().not()
@@ -139,12 +140,12 @@ class FriendshipsRepository {
     suspend fun getFriends(userId: String): List<User> = dbQuery {
         val asSender = FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.receiverId eq UsersTable.id })
-            .select { (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED) }
+            .selectAll().where { (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED) }
             .map(::userFromRow)
 
         val asReceiver = FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.senderId eq UsersTable.id })
-            .select { (FriendshipsTable.receiverId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED) }
+            .selectAll().where { (FriendshipsTable.receiverId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED) }
             .map(::userFromRow)
 
         asSender + asReceiver
@@ -154,7 +155,7 @@ class FriendshipsRepository {
     suspend fun getPendingIncoming(userId: String): List<User> = dbQuery {
         FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.senderId eq UsersTable.id })
-            .select { (FriendshipsTable.receiverId eq userId) and (FriendshipsTable.status eq STATUS_PENDING) }
+            .selectAll().where { (FriendshipsTable.receiverId eq userId) and (FriendshipsTable.status eq STATUS_PENDING) }
             .map(::userFromRow)
     }
 
@@ -167,17 +168,17 @@ class FriendshipsRepository {
     suspend fun getPendingOutgoing(userId: String): List<User> = dbQuery {
         FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.receiverId eq UsersTable.id })
-            .select { (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_PENDING) }
+            .selectAll().where { (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_PENDING) }
             .map(::userFromRow)
     }
 
     /** ID-jevi svih prihvaćenih prijatelja - koristi se za friend activity feed. */
     suspend fun getFriendIds(userId: String): List<String> = dbQuery {
-        val asSender = FriendshipsTable.select {
+        val asSender = FriendshipsTable.selectAll().where {
             (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED)
         }.map { it[FriendshipsTable.receiverId] }
 
-        val asReceiver = FriendshipsTable.select {
+        val asReceiver = FriendshipsTable.selectAll().where {
             (FriendshipsTable.receiverId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED)
         }.map { it[FriendshipsTable.senderId] }
 

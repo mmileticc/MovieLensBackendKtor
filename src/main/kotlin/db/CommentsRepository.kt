@@ -2,6 +2,7 @@ package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
 import kotlinx.datetime.LocalDateTime
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -50,7 +51,7 @@ class CommentsRepository {
      * njegove lajkove (FK ka CommentsTable.id) pa sam komentar.
      */
     suspend fun delete(commentId: Int, userId: String): Boolean = dbQuery {
-        val owns = CommentsTable.select {
+        val owns = CommentsTable.selectAll().where {
             (CommentsTable.id eq commentId) and (CommentsTable.userId eq userId)
         }.empty().not()
         if (!owns) return@dbQuery false
@@ -81,7 +82,7 @@ class CommentsRepository {
         val allRows = dbQuery {
             CommentsTable
                 .join(UsersTable, JoinType.INNER, additionalConstraint = { CommentsTable.userId eq UsersTable.id })
-                .select { CommentsTable.movieId eq movieId }
+                .selectAll().where { CommentsTable.movieId eq movieId }
                 .orderBy(CommentsTable.createdAt, SortOrder.DESC)
                 .map { row ->
                     CommentRow(
@@ -108,7 +109,7 @@ class CommentsRepository {
 
         val commentIds = page.map { it.id }
         val likeUserIdsByComment = dbQuery {
-            CommentLikesTable.select { CommentLikesTable.commentId inList commentIds }
+            CommentLikesTable.selectAll().where { CommentLikesTable.commentId inList commentIds }
                 .map { it[CommentLikesTable.commentId] to it[CommentLikesTable.userId] }
         }.groupBy({ it.first }, { it.second })
 
@@ -125,14 +126,14 @@ class CommentsRepository {
      * ako korisnik pokušava da lajkuje sopstveni komentar (korisnički zahtev - ne sme).
      */
     suspend fun toggleLike(commentId: Int, userId: String): LikeToggleResult = dbQuery {
-        val ownerId = CommentsTable.select { CommentsTable.id eq commentId }
+        val ownerId = CommentsTable.selectAll().where { CommentsTable.id eq commentId }
             .firstOrNull()?.get(CommentsTable.userId)
             ?: throw IllegalArgumentException("Komentar nije pronađen")
         if (ownerId == userId) {
             throw IllegalArgumentException("Ne možeš lajkovati sopstveni komentar")
         }
 
-        val alreadyLiked = CommentLikesTable.select {
+        val alreadyLiked = CommentLikesTable.selectAll().where {
             (CommentLikesTable.commentId eq commentId) and (CommentLikesTable.userId eq userId)
         }.empty().not()
 
@@ -147,7 +148,7 @@ class CommentsRepository {
             }
         }
 
-        val likeCount = CommentLikesTable.select { CommentLikesTable.commentId eq commentId }.count().toInt()
+        val likeCount = CommentLikesTable.selectAll().where { CommentLikesTable.commentId eq commentId }.count().toInt()
         LikeToggleResult(liked = !alreadyLiked, likeCount = likeCount)
     }
 }

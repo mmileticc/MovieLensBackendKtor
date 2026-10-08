@@ -56,7 +56,7 @@ dependencies {
     implementation("com.squareup.okio:okio:3.9.0")
 
     // Google AI SDK
-    implementation("com.google.genai:google-genai:0.1.0")
+    implementation("com.google.genai:google-genai:1.76.0")
 
     // Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
     // lokalno") - MiniLM embedding model, ONNX runtime + težine modela upakovani direktno u jar,
@@ -81,13 +81,13 @@ dependencies {
 
 
     //scraping biblioteke
-    implementation("com.microsoft.playwright:playwright:1.42.0")
+    implementation("com.microsoft.playwright:playwright:1.63.0")
     implementation("org.jsoup:jsoup:1.17.2")
 
-    implementation("org.jetbrains.exposed:exposed-core:0.41.1")
-    implementation("org.jetbrains.exposed:exposed-dao:0.41.1")
-    implementation("org.jetbrains.exposed:exposed-jdbc:0.41.1")
-    implementation("org.jetbrains.exposed:exposed-kotlin-datetime:0.41.1")
+    implementation("org.jetbrains.exposed:exposed-core:0.61.0")
+    implementation("org.jetbrains.exposed:exposed-dao:0.61.0")
+    implementation("org.jetbrains.exposed:exposed-jdbc:0.61.0")
+    implementation("org.jetbrains.exposed:exposed-kotlin-datetime:0.61.0")
 
     // PostgreSQL drajver
     implementation("org.postgresql:postgresql:42.7.11")

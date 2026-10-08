@@ -42,8 +42,7 @@ permissions:
 
 jobs:
   scrape:
-    # 22.04 namerno (ne ubuntu-latest): Playwright 1.42 "install --with-deps" ne podržava 24.04.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
@@ -60,7 +59,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-1.42.0-${{ runner.os }}
+          # Verzija u ključu mora da prati com.microsoft.playwright u build.gradle.kts.
+          key: playwright-1.63.0-${{ runner.os }}
 
       - name: Build
         run: |

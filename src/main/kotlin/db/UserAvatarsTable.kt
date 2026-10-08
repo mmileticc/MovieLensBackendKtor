@@ -2,6 +2,7 @@ package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
 import com.milinko.detectImageMime
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
@@ -62,7 +63,7 @@ internal fun storeAvatarFromDataUri(userId: String, dataUri: String): String {
         .joinToString("") { "%02x".format(it) }
         .take(16)
 
-    val exists = UserAvatarsTable.select { UserAvatarsTable.userId eq userId }.limit(1).any()
+    val exists = UserAvatarsTable.selectAll().where { UserAvatarsTable.userId eq userId }.limit(1).any()
     if (exists) {
         UserAvatarsTable.update({ UserAvatarsTable.userId eq userId }) {
             it[UserAvatarsTable.bytes] = bytes
@@ -83,7 +84,7 @@ internal fun storeAvatarFromDataUri(userId: String, dataUri: String): String {
 class AvatarRepository {
 
     suspend fun getAvatar(userId: String): StoredAvatar? = dbQuery {
-        UserAvatarsTable.select { UserAvatarsTable.userId eq userId }
+        UserAvatarsTable.selectAll().where { UserAvatarsTable.userId eq userId }
             .map { StoredAvatar(it[UserAvatarsTable.bytes], it[UserAvatarsTable.mime], it[UserAvatarsTable.hash]) }
             .firstOrNull()
     }
@@ -93,7 +94,7 @@ class AvatarRepository {
      * [UserAvatarsTable]. Idempotentna - posle prvog prolaska nema više `data:` vrednosti.
      */
     suspend fun migrateInlineAvatars(): Int = dbQuery {
-        val inline = UsersTable.select { UsersTable.avatarUrl like "data:%" }
+        val inline = UsersTable.selectAll().where { UsersTable.avatarUrl like "data:%" }
             .map { it[UsersTable.id] to it[UsersTable.avatarUrl]!! }
         var migrated = 0
         for ((userId, dataUri) in inline) {

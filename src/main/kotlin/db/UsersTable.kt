@@ -5,6 +5,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
@@ -145,7 +146,7 @@ class UserDao {
         val now = Clock.System.now().toLocalDateTime(TimeZone.UTC)
 
         // Prvo proverim da li korisnik postoji
-        val existingUser = UsersTable.select { UsersTable.firebaseUid eq firebaseUid }
+        val existingUser = UsersTable.selectAll().where { UsersTable.firebaseUid eq firebaseUid }
             .firstOrNull()
 
         if (existingUser != null) {
@@ -180,7 +181,7 @@ class UserDao {
             // Retko: dva korisnika sa istim imenom bi se sanitizovala u isti default username -
             // dodaj kratak sufiks iz firebaseUid-a da ostane jedinstven (isti dogovor o jedinstvenosti
             // kao u updateProfile, samo primenjen i na trenutak kreiranja naloga).
-            val taken = UsersTable.select { UsersTable.username.lowerCase() eq finalUsername.lowercase() }
+            val taken = UsersTable.selectAll().where { UsersTable.username.lowerCase() eq finalUsername.lowercase() }
                 .limit(1).any()
             if (taken) {
                 finalUsername = "${finalUsername.take(24)}_${firebaseUid.take(4).lowercase()}"
@@ -196,7 +197,7 @@ class UserDao {
         }
 
         // Čitaj upsertovani red
-        UsersTable.select { UsersTable.firebaseUid eq firebaseUid }
+        UsersTable.selectAll().where { UsersTable.firebaseUid eq firebaseUid }
             .map { it.toUser() }
             .firstOrNull() ?: throw Exception("User nije pronađen nakon upserta")
     }
@@ -205,7 +206,7 @@ class UserDao {
      * Pronađi korisnika po Firebase UID
      */
     suspend fun findByFirebaseUid(firebaseUid: String): User? = dbQuery {
-        UsersTable.select { UsersTable.firebaseUid eq firebaseUid }
+        UsersTable.selectAll().where { UsersTable.firebaseUid eq firebaseUid }
             .map { it.toUser() }
             .firstOrNull()
     }
@@ -214,7 +215,7 @@ class UserDao {
      * Pronađi korisnika po ID-u (text, ne uuid — vidi napomenu uz UsersTable)
      */
     suspend fun findById(userId: String): User? = dbQuery {
-        UsersTable.select { UsersTable.id eq userId }
+        UsersTable.selectAll().where { UsersTable.id eq userId }
             .map { it.toUser() }
             .firstOrNull()
     }
@@ -234,7 +235,7 @@ class UserDao {
         } else {
             UsersTable.username.lowerCase() like "%$trimmed%"
         }
-        UsersTable.select { (UsersTable.id neq excludeUserId) and matchesQuery }
+        UsersTable.selectAll().where { (UsersTable.id neq excludeUserId) and matchesQuery }
             .limit(limit)
             .map { it.toUser() }
     }
@@ -259,7 +260,7 @@ class UserDao {
             throw IllegalArgumentException("Slika je prevelika - probaj sa manjom/kompresovanijom slikom")
         }
 
-        val taken = UsersTable.select {
+        val taken = UsersTable.selectAll().where {
             (UsersTable.id neq userId) and (UsersTable.username.lowerCase() eq trimmedUsername.lowercase())
         }.limit(1).any()
         if (taken) {
@@ -277,7 +278,7 @@ class UserDao {
             }
         }
 
-        UsersTable.select { UsersTable.id eq userId }
+        UsersTable.selectAll().where { UsersTable.id eq userId }
             .map { it.toUser() }
             .firstOrNull() ?: throw IllegalStateException("Korisnik nije pronađen nakon ažuriranja")
     }

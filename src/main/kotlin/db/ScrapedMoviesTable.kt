@@ -96,7 +96,7 @@ class ScrapedMoviesRepository {
      */
     suspend fun getLatestScrapeTimestamp(): LocalDateTime? = dbQuery {
         val maxCreatedAt = ScrapedMoviesTable.createdAt.max()
-        ScrapedMoviesTable.slice(maxCreatedAt).selectAll().singleOrNull()?.get(maxCreatedAt)
+        ScrapedMoviesTable.select(maxCreatedAt).singleOrNull()?.get(maxCreatedAt)
     }
 
     suspend fun getLatestScrapeDate(): java.time.LocalDate? {
@@ -131,7 +131,7 @@ class ScrapedMoviesRepository {
      * preko implicitnog receiver-a, bez potrebe za importom (isti obrazac kao ostatak baze).
      */
     suspend fun getShowtimesForMovie(tmdbId: Int): List<ScrapedMovie> = dbQuery {
-        ScrapedMoviesTable.select { ScrapedMoviesTable.tmdbId eq tmdbId }.map { row ->
+        ScrapedMoviesTable.selectAll().where { ScrapedMoviesTable.tmdbId eq tmdbId }.map { row ->
             ScrapedMovie(
                 title = row[ScrapedMoviesTable.title],
                 originalTitle = row[ScrapedMoviesTable.originalTitle],

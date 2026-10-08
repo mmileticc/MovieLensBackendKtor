@@ -2,6 +2,7 @@ package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
 import com.milinko.services.TmdbGenre
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.select
@@ -93,7 +94,7 @@ class TasteProfileRepository {
         val ratedRowsByUser = dbQuery {
             UserActionsTable
                 .join(MoviesTable, JoinType.INNER, additionalConstraint = { UserActionsTable.movieId eq MoviesTable.tmdbId })
-                .select {
+                .selectAll().where {
                     (UserActionsTable.userId inList userIds) and
                         (UserActionsTable.actionType eq "WATCHED") and
                         (UserActionsTable.rating.isNotNull())

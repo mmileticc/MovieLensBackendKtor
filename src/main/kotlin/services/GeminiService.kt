@@ -1,6 +1,7 @@
 package com.milinko.services
 
 import com.google.genai.Client
+import com.google.genai.errors.ApiException
 import com.google.genai.types.Blob
 import com.google.genai.types.Content
 import com.google.genai.types.Part
@@ -20,7 +21,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
-import java.util.Base64
 import java.util.concurrent.Executors
 
 
@@ -61,8 +61,6 @@ class GeminiService(private val apiKey: String) {
         imageBytes: ByteArray,
         mimeType: String = "image/jpeg"
     ): GeminiMovieCandidatesResponse = withContext(sdkDispatcher) {
-        val base64Image = Base64.getEncoder().encodeToString(imageBytes)
-
         val instruction = buildString {
             appendLine("You are a vision assistant that identifies the movie depicted in the provided image.")
             appendLine("Ignore any user-provided text. Analyze ONLY the image.")
@@ -94,7 +92,7 @@ class GeminiService(private val apiKey: String) {
         val imagePart = Part.builder()
             .inlineData(
                 Blob.builder()
-                    .data(base64Image)
+                    .data(imageBytes)
                     .mimeType(mimeType)
                     .build()
             ).build()
@@ -115,7 +113,8 @@ class GeminiService(private val apiKey: String) {
                     if (!t.isNullOrEmpty()) sb.append(t)
                 }
         } catch (e: Exception) {
-            if (isGeminiOverloadSignal(e.message)) {
+            val overloadedCode = e is ApiException && (e.code() == 429 || e.code() == 503)
+            if (overloadedCode || isGeminiOverloadSignal(e.message)) {
                 throw GeminiOverloadedException("Gemini je trenutno preopterećen: ${e.message}")
             }
             throw IllegalStateException("Gemini SDK error: ${e.message}", e)

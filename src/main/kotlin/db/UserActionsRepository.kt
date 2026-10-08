@@ -2,6 +2,7 @@ package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
 import kotlinx.datetime.LocalDateTime
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -73,19 +74,19 @@ class UserActionsRepository {
     )
 
     suspend fun getWatchlist(userId: String): List<UserActionMovieRow> = dbQuery {
-        joined.select {
+        joined.selectAll().where {
             (UserActionsTable.userId eq userId) and (UserActionsTable.actionType eq ACTION_WATCHLIST)
         }.map(::rowMapper)
     }
 
     suspend fun getHistory(userId: String): List<UserActionMovieRow> = dbQuery {
-        joined.select {
+        joined.selectAll().where {
             (UserActionsTable.userId eq userId) and (UserActionsTable.actionType eq ACTION_WATCHED)
         }.map(::rowMapper)
     }
 
     suspend fun getWatchlistItem(userId: String, tmdbId: Long): UserActionMovieRow? = dbQuery {
-        joined.select {
+        joined.selectAll().where {
             (UserActionsTable.userId eq userId) and
                 (UserActionsTable.movieId eq tmdbId) and
                 (UserActionsTable.actionType eq ACTION_WATCHLIST)
@@ -93,7 +94,7 @@ class UserActionsRepository {
     }
 
     suspend fun getHistoryItem(userId: String, tmdbId: Long): UserActionMovieRow? = dbQuery {
-        joined.select {
+        joined.selectAll().where {
             (UserActionsTable.userId eq userId) and
                 (UserActionsTable.movieId eq tmdbId) and
                 (UserActionsTable.actionType eq ACTION_WATCHED)
@@ -101,7 +102,7 @@ class UserActionsRepository {
     }
 
     suspend fun addToWatchlist(userId: String, tmdbId: Long): Unit = dbQuery {
-        val exists = UserActionsTable.select {
+        val exists = UserActionsTable.selectAll().where {
             (UserActionsTable.userId eq userId) and
                 (UserActionsTable.movieId eq tmdbId) and
                 (UserActionsTable.actionType eq ACTION_WATCHLIST)
@@ -146,7 +147,7 @@ class UserActionsRepository {
      * preopterećivati `null` sa dva značenja.
      */
     suspend fun markWatched(userId: String, tmdbId: Long, rating: Int?, review: String? = null): Unit = dbQuery {
-        val exists = UserActionsTable.select {
+        val exists = UserActionsTable.selectAll().where {
             (UserActionsTable.userId eq userId) and
                 (UserActionsTable.movieId eq tmdbId) and
                 (UserActionsTable.actionType eq ACTION_WATCHED)
@@ -200,7 +201,7 @@ class UserActionsRepository {
             UserActionsTable
                 .join(MoviesTable, JoinType.INNER, additionalConstraint = { UserActionsTable.movieId eq MoviesTable.tmdbId })
                 .join(UsersTable, JoinType.INNER, additionalConstraint = { UserActionsTable.userId eq UsersTable.id })
-                .select {
+                .selectAll().where {
                     (UserActionsTable.userId inList friendIds) and (UserActionsTable.actionType eq ACTION_WATCHED)
                 }
                 .orderBy(UserActionsTable.createdAt, SortOrder.DESC)
@@ -230,7 +231,7 @@ class UserActionsRepository {
         return dbQuery {
             UserActionsTable
                 .join(UsersTable, JoinType.INNER, additionalConstraint = { UserActionsTable.userId eq UsersTable.id })
-                .select {
+                .selectAll().where {
                     (UserActionsTable.userId inList friendIds) and
                         (UserActionsTable.movieId eq tmdbId) and
                         (UserActionsTable.actionType eq ACTION_WATCHED)

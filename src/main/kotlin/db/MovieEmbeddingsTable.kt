@@ -4,6 +4,7 @@ import com.milinko.db.DatabaseFactory.dbQuery
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
@@ -53,7 +54,7 @@ class MovieEmbeddingsRepository {
      * jednom na početku i posle samo poredi hash po filmu, umesto da radi upit po filmu.
      */
     suspend fun getEmbeddingsForEngine(engine: String): Map<Int, CachedEmbedding> = dbQuery {
-        MovieEmbeddingsTable.select { MovieEmbeddingsTable.engine eq engine }
+        MovieEmbeddingsTable.selectAll().where { MovieEmbeddingsTable.engine eq engine }
             .associate { row ->
                 row[MovieEmbeddingsTable.tmdbId] to CachedEmbedding(
                     sourceHash = row[MovieEmbeddingsTable.sourceHash],
