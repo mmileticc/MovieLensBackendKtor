@@ -56,9 +56,15 @@ class PushService(
             val payload = JsonObject(data.mapValues { JsonPrimitive(it.value) }).let { Json.encodeToString(JsonObject.serializer(), it) }
             notifications.add(userId, type.name, inboxText, payload, dedupeKey)
 
-            if (FirebaseApp.getApps().isEmpty()) return true
+            if (FirebaseApp.getApps().isEmpty()) {
+                logger.warn("$type za $userId: Firebase nije inicijalizovan - upisano samo u istoriju.")
+                return true
+            }
             val tokens = deviceTokens.tokensFor(userId)
-            if (tokens.isEmpty()) return true
+            if (tokens.isEmpty()) {
+                logger.info("$type za $userId: korisnik nema registrovan uređaj - upisano samo u istoriju.")
+                return true
+            }
 
             val message = MulticastMessage.builder()
                 .addAllTokens(tokens)
@@ -67,6 +73,10 @@ class PushService(
                 .setAndroidConfig(AndroidConfig.builder().setPriority(AndroidConfig.Priority.HIGH).build())
                 .build()
             val response = FirebaseMessaging.getInstance().sendEachForMulticast(message)
+            logger.info("$type za $userId: poslato na ${response.successCount}/${tokens.size} uređaja.")
+            response.responses.filter { !it.isSuccessful }.forEach {
+                logger.warn("$type za $userId: FCM greška ${it.exception?.messagingErrorCode}: ${it.exception?.message}")
+            }
 
             val invalid = response.responses.mapIndexedNotNull { index, r ->
                 val code = r.exception?.messagingErrorCode
