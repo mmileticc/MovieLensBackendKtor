@@ -11,6 +11,9 @@ import com.milinko.scraping.model.ScrapedMovie
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("CineStarScraper")
 
 /**
  * cinestarcinemas.rs je klasičan server-renderovan sajt (jQuery + Bootstrap-select), NE
@@ -47,7 +50,7 @@ class CineStarScraper : CinemaScraper {
         val sirovFilmovi = mutableListOf<ScrapedMovie>()
         var konacniFilmovi: List<ScrapedMovie> = emptyList()
 
-        println("[$cinemaName] Inicijalizacija Playwright drajvera...")
+        logger.info("[$cinemaName] Inicijalizacija Playwright drajvera...")
 
         Playwright.create().use { localPlaywright ->
 
@@ -71,16 +74,16 @@ class CineStarScraper : CinemaScraper {
                     for ((putanja, imeLokacije) in lokacije) {
                         try {
                             val url = "$baseUrl$putanja"
-                            println("[$cinemaName] [$imeLokacije] Otvaram stranicu: $url")
+                            logger.info("[$cinemaName] [$imeLokacije] Otvaram stranicu: $url")
                             page.navigate(url)
                             page.waitForSelector(".movie-item", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
                             val doc = Jsoup.parse(page.content())
                             val filmoviSaLokacije = parseMoviesFromDoc(doc, imeLokacije)
-                            println("[$cinemaName] [$imeLokacije] Pronađeno filmova: ${filmoviSaLokacije.size}")
+                            logger.info("[$cinemaName] [$imeLokacije] Pronađeno filmova: ${filmoviSaLokacije.size}")
                             sirovFilmovi.addAll(filmoviSaLokacije)
                         } catch (e: Exception) {
-                            println("[$cinemaName] [$imeLokacije] Greška pri skrapovanju: ${e.message}")
+                            logger.warn("[$cinemaName] [$imeLokacije] Greška pri skrapovanju: ${e.message}")
                         }
                     }
 
@@ -89,7 +92,7 @@ class CineStarScraper : CinemaScraper {
                     } catch (e: Exception) {
                         // Ako obogaćivanje iz nekog razloga potpuno padne, bolje vratiti filmove BEZ
                         // izvornih naslova nego izgubiti ceo ciklus skrapovanja zbog sporedne stvari.
-                        println("[$cinemaName] Greška pri obogaćivanju izvornim naslovima - vraćam filmove bez toga: ${e.message}")
+                        logger.warn("[$cinemaName] Greška pri obogaćivanju izvornim naslovima - vraćam filmove bez toga: ${e.message}")
                         sirovFilmovi
                     }
                 } finally {
@@ -97,7 +100,7 @@ class CineStarScraper : CinemaScraper {
                     browser.close()
                 }
             } catch (e: Exception) {
-                println("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
+                logger.warn("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
                 konacniFilmovi = sirovFilmovi
             }
         }
@@ -159,7 +162,7 @@ class CineStarScraper : CinemaScraper {
             val izvorniNaslov = if (izvorniNasloviPoId.containsKey(filmId)) {
                 izvorniNasloviPoId.getValue(filmId)
             } else {
-                println("[$cinemaName] Čitam izvorni naslov za: ${film.title}")
+                logger.info("[$cinemaName] Čitam izvorni naslov za: ${film.title}")
                 val naslov = izvuciIzvorniNaslov(context, film.bookingUrl)
                 izvorniNasloviPoId[filmId] = naslov
                 naslov
@@ -190,7 +193,7 @@ class CineStarScraper : CinemaScraper {
             doc.select(".movie-detail-item:has(span.gray:contains(Izvorni naslov)) span:not(.gray)")
                 .first()?.text()?.trim()?.takeIf { it.isNotEmpty() }
         } catch (e: Exception) {
-            println("[$cinemaName] Greška pri čitanju izvornog naslova za $urlFilma: ${e.message}")
+            logger.warn("[$cinemaName] Greška pri čitanju izvornog naslova za $urlFilma: ${e.message}")
             null
         } finally {
             privremenaStranica.close()

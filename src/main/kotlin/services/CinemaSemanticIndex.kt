@@ -10,6 +10,9 @@ import kotlinx.coroutines.sync.withPermit
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("CinemaSemanticIndex")
 
 /**
  * Faza D (17. avgust 2026, predlog mentora Marka) - semantička/vektorska pretraga filmova,
@@ -97,7 +100,7 @@ class CinemaSemanticIndex(
                             embedding = embedding
                         )
                     } catch (e: Exception) {
-                        println("[WARN] CinemaSemanticIndex: preskačem tmdbId=$tmdbId (${e.message})")
+                        logger.warn("CinemaSemanticIndex: preskačem tmdbId=$tmdbId (${e.message})")
                         null
                     }
                 }
@@ -105,7 +108,7 @@ class CinemaSemanticIndex(
         }
 
         entries = newEntries
-        println("[LOG] CinemaSemanticIndex (${embedder.label}) osvežen: ${newEntries.size}/${byTmdbId.size} filmova indeksirano (${reusedCount.get()} iz DB keša, ${newEntries.size - reusedCount.get()} novo izračunato).")
+        logger.info("CinemaSemanticIndex (${embedder.label}) osvežen: ${newEntries.size}/${byTmdbId.size} filmova indeksirano (${reusedCount.get()} iz DB keša, ${newEntries.size - reusedCount.get()} novo izračunato).")
     }
 
     /** SHA-256 heks digest teksta od kog je embedding izračunat - videti napomenu na MovieEmbeddingsTable.sourceHash. */

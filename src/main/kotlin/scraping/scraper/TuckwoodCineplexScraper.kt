@@ -6,6 +6,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.io.IOException
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("TuckwoodCineplexScraper")
 
 /**
  * tuck.rs (Tuckwood Cineplex, Kneza Miloša 7a, Beograd) je klasičan server-renderovan WordPress
@@ -48,7 +51,7 @@ class TuckwoodCineplexScraper : CinemaScraper {
         if (docRepertoar != null) {
             val filmoviSaRepertoara = parseMoviesFromDoc(docRepertoar, isUpcoming = false)
             if (filmoviSaRepertoara.isEmpty()) {
-                println("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
+                logger.info("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
             }
             tekuciFilmovi.addAll(filmoviSaRepertoara)
         }
@@ -67,7 +70,7 @@ class TuckwoodCineplexScraper : CinemaScraper {
             if (!filtriranaMapa.containsKey(key)) {
                 filtriranaMapa[key] = upcomingIno
             } else {
-                println("[$cinemaName] [DEDUPLIKACIJA] Preskačem '$key' iz sekcije Uskoro jer već igra na repertoaru.")
+                logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem '$key' iz sekcije Uskoro jer već igra na repertoaru.")
             }
         }
 
@@ -93,7 +96,7 @@ class TuckwoodCineplexScraper : CinemaScraper {
                     .get()
             } catch (e: IOException) {
                 val sufiks = if (pokusaj < maxPokusaja) " - pokušavam ponovo" else ""
-                println("[$cinemaName] [$oznakaSekcije] Greška pri skrapovanju (pokušaj $pokusaj/$maxPokusaja, timeout ${timeoutMs}ms): ${e.message}$sufiks")
+                logger.warn("[$cinemaName] [$oznakaSekcije] Greška pri skrapovanju (pokušaj $pokusaj/$maxPokusaja, timeout ${timeoutMs}ms): ${e.message}$sufiks")
             }
         }
 
@@ -122,7 +125,7 @@ class TuckwoodCineplexScraper : CinemaScraper {
             if (naslov.isEmpty()) continue
 
             val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
-            println("[$cinemaName] [$tipLoga] Pronađen film: $naslov")
+            logger.info("[$cinemaName] [$tipLoga] Pronađen film: $naslov")
 
             result.add(
                 ScrapedMovie(

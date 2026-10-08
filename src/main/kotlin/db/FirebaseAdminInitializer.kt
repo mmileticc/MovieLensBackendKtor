@@ -3,12 +3,15 @@ package com.milinko.db
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("FirebaseAdminInitializer")
 
 object FirebaseAdminInitializer {
     fun init() {
         // Ako je već inicijalizovano, ne inicijalizuj ponovo
         if (FirebaseApp.getApps().isNotEmpty()) {
-            println("[FIREBASE] Firebase je već inicijalizovan.")
+            logger.info("[FIREBASE] Firebase je već inicijalizovan.")
             return
         }
 
@@ -17,11 +20,11 @@ object FirebaseAdminInitializer {
 
             val credentials = if (!serviceAccountJson.isNullOrBlank()) {
                 // Ako je env var postavljen, koristi ga kao JSON string
-                println("[FIREBASE] Korišćenje FIREBASE_SERVICE_ACCOUNT_JSON from environment variable.")
+                logger.info("[FIREBASE] Korišćenje FIREBASE_SERVICE_ACCOUNT_JSON from environment variable.")
                 GoogleCredentials.fromStream(serviceAccountJson.byteInputStream())
             } else {
                 // Fallback na Application Default Credentials (za lokalno testiranje ili Google Cloud)
-                println("[FIREBASE] Korišćenje Application Default Credentials.")
+                logger.info("[FIREBASE] Korišćenje Application Default Credentials.")
                 GoogleCredentials.getApplicationDefault()
             }
 
@@ -30,10 +33,9 @@ object FirebaseAdminInitializer {
                 .build()
 
             FirebaseApp.initializeApp(options)
-            println("[FIREBASE] Firebase Admin SDK je uspešno inicijalizovan!")
+            logger.info("[FIREBASE] Firebase Admin SDK je uspešno inicijalizovan!")
         } catch (e: Exception) {
-            println("[FIREBASE] GREŠKA pri inicijalizaciji Firebase Admin SDK-a: ${e.message}")
-            e.printStackTrace()
+            logger.error("[FIREBASE] GREŠKA pri inicijalizaciji Firebase Admin SDK-a: ${e.message}", e)
             throw IllegalStateException("Neuspešna inicijalizacija Firebase Admin SDK-a", e)
         }
     }

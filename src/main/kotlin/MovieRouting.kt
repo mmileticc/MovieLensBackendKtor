@@ -26,6 +26,9 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("MovieRouting")
 
 /**
  * Javne rute za pretragu/detalje/trending filmova (Faza 1 iz MOVIELENS_ROADMAP.md).
@@ -408,7 +411,7 @@ fun Application.configureMovieRouting(
                             )
                         } catch (e: GeminiOverloadedException) {
 
-                            println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
+                            logger.error("Gemini overloaded (semantic-search): ${e.message}")
                             call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                         } catch (e: Exception) {
                             call.respondUpstreamError("/api/movies/now-in-cinemas/semantic-search", e, "Semantička pretraga nije uspela")
@@ -452,7 +455,7 @@ fun Application.configureMovieRouting(
                         val omdbRatings = try {
                             omdbService.getRatings(detail.imdbId)
                         } catch (e: Exception) {
-                            println("[WARN] OMDb obogaćivanje nije uspelo za tmdbId=$tmdbId: ${e.message}")
+                            logger.warn("OMDb obogaćivanje nije uspelo za tmdbId=$tmdbId: ${e.message}")
                             null
                         }
 

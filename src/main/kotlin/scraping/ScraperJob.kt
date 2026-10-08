@@ -14,11 +14,14 @@ import com.milinko.scraping.scraper.TuckwoodCineplexScraper
 import com.milinko.services.TmdbService
 import com.milinko.services.enrichWithTmdbIds
 import com.milinko.util.CINEMA_ZONE_ID
+import org.slf4j.LoggerFactory
 import scraping.ScrapingEngineConcurrent
 import java.io.File
 import java.io.PrintStream
 import java.time.LocalDate
 import kotlin.system.exitProcess
+
+private val logger = LoggerFactory.getLogger("ScraperJob")
 
 /**
  * Jedan zajednički spisak aktivnih skrepera - koristi ga i Application.kt
@@ -60,8 +63,7 @@ suspend fun main() {
     val exitCode = try {
         runScraperJob()
     } catch (e: Throwable) {
-        println("[ScraperJob] FATALNA greška: ${e.message}")
-        e.printStackTrace()
+        logger.error("[ScraperJob] FATALNA greška: ${e.message}", e)
         writeReport("## ❌ Scraping nije ni završen\n\nFatalna greška: `${e.message}`\n\nDetalji su u logu run-a.\n")
         2
     }
@@ -84,20 +86,20 @@ private suspend fun runScraperJob(): Int {
     if (System.getenv("SKIP_IF_FRESH").equals("true", ignoreCase = true)) {
         val poslednjiScrape = repository.getLatestScrapeDate()
         if (poslednjiScrape == danasnjiDatum) {
-            println("[ScraperJob] Podaci su već od danas ($poslednjiScrape) - rezervni run preskače skrejpovanje.")
+            logger.info("[ScraperJob] Podaci su već od danas ($poslednjiScrape) - rezervni run preskače skrejpovanje.")
             writeGithubOutput("skipped", "true")
             return 0
         }
-        println("[ScraperJob] Poslednji scrape je od $poslednjiScrape - rezervni run preuzima dnevno skrejpovanje.")
+        logger.info("[ScraperJob] Poslednji scrape je od $poslednjiScrape - rezervni run preuzima dnevno skrejpovanje.")
     }
     val scraperi = sviAktivniScraperi()
 
     val skrapovaniFilmovi = ScrapingEngineConcurrent(scraperi).runAllScrapers(danasnjiDatum)
 
-    println("[ScraperJob] Pretraga TMDB ID-jeva za ${skrapovaniFilmovi.size} filmova...")
+    logger.info("[ScraperJob] Pretraga TMDB ID-jeva za ${skrapovaniFilmovi.size} filmova...")
     val obogaceniFilmovi = skrapovaniFilmovi.enrichWithTmdbIds(tmdbService)
     val saIdjem = obogaceniFilmovi.count { it.tmdbId != null }
-    println("[ScraperJob] TMDB ID pronađen za $saIdjem od ${obogaceniFilmovi.size}")
+    logger.info("[ScraperJob] TMDB ID pronađen za $saIdjem od ${obogaceniFilmovi.size}")
 
     // insertScrapedMovies sam preskače brisanje ako je lista prazna, i menja samo bioskope koji
     // su nešto vratili - bioskop koji je pao zadržava jučerašnje redove.
@@ -108,17 +110,17 @@ private suspend fun runScraperJob(): Int {
     }
     val prazni = poBioskopu.filterValues { it.isEmpty() }.keys
 
-    println("\n=== REZIME ($danasnjiDatum) ===")
+    logger.info("=== REZIME ($danasnjiDatum) ===")
     poBioskopu.forEach { (ime, filmovi) ->
-        println("- $ime: ${filmovi.size} filmova${if (filmovi.isEmpty()) "  ‼ NULA - proveri log iznad" else ""}")
+        logger.info("- $ime: ${filmovi.size} filmova${if (filmovi.isEmpty()) "  ‼ NULA - proveri log iznad" else ""}")
     }
     writeReport(buildReport(danasnjiDatum, poBioskopu, saIdjem, obogaceniFilmovi.size))
 
     return if (prazni.isEmpty()) {
-        println("[ScraperJob] Svi bioskopi OK.")
+        logger.info("[ScraperJob] Svi bioskopi OK.")
         0
     } else {
-        println("[ScraperJob] Bioskopi bez rezultata: $prazni - ostali su upisani, job se označava kao neuspešan.")
+        logger.warn("[ScraperJob] Bioskopi bez rezultata: $prazni - ostali su upisani, job se označava kao neuspešan.")
         1
     }
 }
@@ -129,7 +131,7 @@ private fun writeGithubOutput(kljuc: String, vrednost: String) {
     try {
         File(putanja).appendText("$kljuc=$vrednost\n")
     } catch (e: Exception) {
-        println("[ScraperJob] Nije uspelo pisanje GITHUB_OUTPUT: ${e.message}")
+        logger.warn("[ScraperJob] Nije uspelo pisanje GITHUB_OUTPUT: ${e.message}")
     }
 }
 
@@ -144,7 +146,7 @@ private fun writeReport(tekst: String) {
         try {
             File(putanja).appendText(tekst)
         } catch (e: Exception) {
-            println("[ScraperJob] Nije uspelo pisanje izveštaja u $envIme: ${e.message}")
+            logger.warn("[ScraperJob] Nije uspelo pisanje izveštaja u $envIme: ${e.message}")
         }
     }
 }

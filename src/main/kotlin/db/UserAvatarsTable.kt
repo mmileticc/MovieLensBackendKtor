@@ -8,6 +8,9 @@ import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.update
 import java.security.MessageDigest
 import java.util.Base64
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("UserAvatarsTable")
 
 /**
  * Profilne slike koje je korisnik sam postavio. Ranije su stajale kao base64 data-URI direktno u
@@ -99,7 +102,7 @@ class AvatarRepository {
                 UsersTable.update({ UsersTable.id eq userId }) { it[UsersTable.avatarUrl] = path }
                 migrated++
             } catch (e: IllegalArgumentException) {
-                println("[WARN] Avatar korisnika $userId nije validna slika, preskačem migraciju: ${e.message}")
+                logger.warn("Avatar korisnika $userId nije validna slika, preskačem migraciju: ${e.message}")
             }
         }
         migrated

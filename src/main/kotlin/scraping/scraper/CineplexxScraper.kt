@@ -15,6 +15,9 @@ import org.jsoup.nodes.Document
 
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("CineplexxScraper")
 
 data class CineplexxDeepDetails(
     val originalTitle: String?,
@@ -37,7 +40,7 @@ class CineplexxScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/film?category=now&location=all&date=$formatiranDatum"
         val urlUskoro = "$baseUrl/film?category=upcoming&date=all"
 
-        println("[$cinemaName] Inicijalizacija Playwright drajvera na radnoj niti...")
+        logger.info("[$cinemaName] Inicijalizacija Playwright drajvera na radnoj niti...")
 
         Playwright.create().use { localPlaywright ->
             val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
@@ -62,14 +65,14 @@ class CineplexxScraper : CinemaScraper {
 
             // 1. Skrapovanje tekućeg repertoara
             try {
-                println("[$cinemaName] [REPERTOAR] Otvaram glavnu stranicu: $urlRepertoar")
+                logger.info("[$cinemaName] [REPERTOAR] Otvaram glavnu stranicu: $urlRepertoar")
                 page.navigate(urlRepertoar)
                 page.waitForSelector("ul.movie-list, li.l-entity__item", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
                 val docRepertoar = Jsoup.parse(page.content())
                 tekuciFilmovi.addAll(parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = emptySet()))
             } catch (e: Exception) {
-                println("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
+                logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
             }
 
             // Pravimo skup čistih linkova (bez query parametara) koji već igraju
@@ -77,14 +80,14 @@ class CineplexxScraper : CinemaScraper {
 
             // 2. Skrapovanje sekcije "Uskoro"
             try {
-                println("[$cinemaName] [USKORO] Otvaram stranicu nadolazećih filmova: $urlUskoro")
+                logger.info("[$cinemaName] [USKORO] Otvaram stranicu nadolazećih filmova: $urlUskoro")
                 page.navigate(urlUskoro)
                 page.waitForSelector("ul.movie-list, li.l-entity__item", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
                 val docUskoro = Jsoup.parse(page.content())
                 upcomingFilmovi.addAll(parseMoviesFromDoc(context, docUskoro, isUpcoming = true, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi))
             } catch (e: Exception) {
-                println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+                logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
             } finally {
                 context.close()
                 browser.close()
@@ -106,14 +109,14 @@ class CineplexxScraper : CinemaScraper {
                 if (!nasloviKojiVecIgraju.contains(naslovKljuc)) {
                     filtriranaMapa[punKljuc] = upcomingIno
                 } else {
-                    println("[$cinemaName] [DEDUPLIKACIJA] Preskačem prazan unos 'Uskoro u bioskopima' za '$naslovKljuc' jer već ima aktivne projekcije.")
+                    logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem prazan unos 'Uskoro u bioskopima' za '$naslovKljuc' jer već ima aktivne projekcije.")
                 }
             } else {
                 // Ako film iz sekcije Uskoro ima specifičnu lokaciju (krenula pretprodaja), tvoj ključ radi savršeno
                 if (!filtriranaMapa.containsKey(punKljuc)) {
                     filtriranaMapa[punKljuc] = upcomingIno
                 } else {
-                    println("[$cinemaName] [DEDUPLIKACIJA] Preskačem duplikat za '$naslovKljuc' na lokaciji [${upcomingIno.cinemaLocation}].")
+                    logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem duplikat za '$naslovKljuc' na lokaciji [${upcomingIno.cinemaLocation}].")
                 }
             }
         }
@@ -132,7 +135,7 @@ class CineplexxScraper : CinemaScraper {
         val filmovi = doc.select("li.l-entity__item")
         val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
 
-        println("[$cinemaName] [$tipLoga] Broj filmova na listi za obradu: ${filmovi.size}")
+        logger.info("[$cinemaName] [$tipLoga] Broj filmova na listi za obradu: ${filmovi.size}")
 
         for (film in filmovi) {
             val linkElement = film.select("a.l-entity__item-link")
@@ -150,7 +153,7 @@ class CineplexxScraper : CinemaScraper {
 
                 // Optimizacija: Ako film iz sekcije Uskoro već igra na repertoaru, preskoči skupu Playwright navigaciju
                 if (isUpcoming && vecSkrapovaniLinkovi.contains(cistUrl)) {
-                    println("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz tekući repertoar)")
+                    logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz tekući repertoar)")
                     continue
                 }
 
@@ -163,7 +166,7 @@ class CineplexxScraper : CinemaScraper {
                     }
                 }
 
-                println("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
+                logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
                 val deepDetails = scrapeDeepDetails(context, linkFilma)
 
                 // Ako film ima dodeljene lokacije (Repertoar)
@@ -255,7 +258,7 @@ class CineplexxScraper : CinemaScraper {
                 return CineplexxDeepDetails(originalniNaslov, pronadjeneLokacije)
             } catch (e: Exception) {
                 val suffix = if (attempt < maxAttempts) " - retrying" else ""
-                println("[$cinemaName] Greška pri dubokom čitanju (attempt $attempt/$maxAttempts): ${e.message}$suffix")
+                logger.warn("[$cinemaName] Greška pri dubokom čitanju (attempt $attempt/$maxAttempts): ${e.message}$suffix")
             } finally {
                 privremenaStranica.close()
             }

@@ -13,6 +13,9 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("OmdbService")
 
 /**
  * OMDb (omdbapi.com) - dopunski, opcioni izvor IMDb i Rotten Tomatoes ocena za Movie Detail
@@ -60,7 +63,7 @@ class OmdbService(private val apiKey: String?) {
         val ratings: OmdbRatings? = try {
             val response: HttpResponse = client.get(url)
             if (!response.status.isSuccess()) {
-                println("[WARN] OMDb HTTP ${response.status.value} za $imdbId")
+                logger.warn("OMDb HTTP ${response.status.value} za $imdbId")
                 null
             } else {
                 val dto: OmdbResponseDto = response.body()
@@ -79,7 +82,7 @@ class OmdbService(private val apiKey: String?) {
             }
         } catch (e: Exception) {
 
-            println("[WARN] OMDb poziv nije uspeo za $imdbId: ${e.message}")
+            logger.warn("OMDb poziv nije uspeo za $imdbId: ${e.message}")
             null
         }
 

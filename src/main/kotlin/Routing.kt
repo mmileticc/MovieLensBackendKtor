@@ -31,6 +31,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
 import java.time.Instant
 import java.util.Date
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("Routing")
 
 @Serializable
 data class ChatRequest(val message: String)
@@ -85,7 +88,7 @@ fun Application.configureRouting(
                 val name = decoded.claims["name"]?.toString()
                 val picture = decoded.claims["picture"]?.toString()
 
-                println("[AUTH] Verified Firebase token for UID: $uid, email: $email")
+                logger.info("[AUTH] Verified Firebase token for UID: $uid")
 
                 // Upsert user u DB
                 val user = userDao.upsertByFirebaseUid(uid, email, name, picture)
@@ -99,7 +102,7 @@ fun Application.configureRouting(
                     .withExpiresAt(Date.from(Instant.now().plusSeconds(86400)))
                     .sign(Algorithm.HMAC256(jwtSigningKey))
 
-                println("[AUTH] Issued JWT token for user: ${user.id}")
+                logger.info("[AUTH] Issued JWT token for user: ${user.id}")
 
                 call.respond(AuthResponse(
                     appToken = token,
@@ -112,19 +115,18 @@ fun Application.configureRouting(
                     )
                 ))
             } catch (e: FirebaseAuthException) {
-                println("[AUTH] Firebase verification failed: ${e.message}")
+                logger.warn("[AUTH] Firebase verification failed: ${e.message}")
                 call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
             } catch (e: IllegalArgumentException) {
                 // Prazan ili neispravno formiran idToken.
-                println("[AUTH] Invalid token format: ${e.message}")
+                logger.info("[AUTH] Invalid token format: ${e.message}")
                 call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
             } catch (e: BadRequestException) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neispravan zahtev"))
             } catch (e: Exception) {
                 // Pad baze, Firebase nije inicijalizovan i sl. - nije problem sa tokenom, pa ne
                 // vraćamo 401 (klijent bi pogrešno zaključio da korisnik mora ponovo da se prijavi).
-                println("[AUTH] Unexpected error: ${e.message}")
-                e.printStackTrace()
+                logger.error("[AUTH] Unexpected error: ${e.message}", e)
                 call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Prijava trenutno nije moguća, pokušaj ponovo"))
             }
         }
@@ -134,7 +136,7 @@ fun Application.configureRouting(
             rateLimit(RATE_LIMIT_VISION) {
                 post("/chat/vision") {
                     val multipart = call.receiveMultipart()
-                    println("\n[LOG] ${java.time.LocalTime.now()} | IMAGE ONLY")
+                    logger.info("IMAGE ONLY")
                     var message: String? = null
                     var imageBytes: ByteArray? = null
                     var tooLarge = false
@@ -169,14 +171,14 @@ fun Application.configureRouting(
                         ?: return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Nepodržan format slike - koristi JPEG ili PNG"))
 
                     val t0 = System.currentTimeMillis()
-                    println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime}")
+                    logger.info("VISION: size=${size} mime=${imageMime}")
 
                     try {
 
                         val filmoviIzBaze = try {
                             repository.getAllScrapedMovies()
                         } catch (dbEx: Exception) {
-                            println("[ERROR] Neuspešno čitanje iz baze, nastavljam sa praznom listom: ${dbEx.message}")
+                            logger.error("Neuspešno čitanje iz baze, nastavljam sa praznom listom: ${dbEx.message}")
                             emptyList<ScrapedMovie>()
                         }
 
@@ -192,8 +194,8 @@ fun Application.configureRouting(
                         }
 
                         val candidatesTop3 = detected.candidates.take(3)
-                        println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
-                        println("[LOG] Detected candidates: ${detected.candidates.joinToString { it.title }}")
+                        logger.info("Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
+                        logger.info("Detected candidates: ${detected.candidates.joinToString { it.title }}")
                         // 2) TMDB pretrage u paraleli (do 3 kandidata)
                         val t3 = System.currentTimeMillis()
                         val resolutions = coroutineScope {
@@ -222,18 +224,18 @@ fun Application.configureRouting(
                                                 )
                                             }
                                     } catch (ex: Exception) {
-                                        println("[ERROR] TMDB search failed for '${cand.title}': ${ex.message}")
+                                        logger.error("TMDB search failed for '${cand.title}': ${ex.message}")
                                         emptyList()
                                     }
                                     for (match in matches) {
-                                        println("[LOG] TMDB match: ${match.title} (${match.releaseDate})")
+                                        logger.info("TMDB match: ${match.title} (${match.releaseDate})")
                                     }
                                     CandidateResolution(candidate = cand, matches = matches)
                                 }
                             }.awaitAll()
                         }
                         val tTmdbMs = System.currentTimeMillis() - t3
-                        println("[LOG] TMDB done in ${tTmdbMs}ms")
+                        logger.info("TMDB done in ${tTmdbMs}ms")
 
                         val payload = VisionSearchResponse(
                             notMovieLike = detected.notMovieLike,
@@ -242,17 +244,17 @@ fun Application.configureRouting(
                             resolutions = resolutions
                         )
 
-                        println("[LOG] /chat/vision total=${System.currentTimeMillis() - t0}ms")
+                        logger.info("/chat/vision total=${System.currentTimeMillis() - t0}ms")
                         call.respond(payload)
 
                     } catch (e: GeminiOverloadedException) {
                     
-                        println("[ERROR] Gemini overloaded: ${e.message}")
+                        logger.error("Gemini overloaded: ${e.message}")
                         call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
                     } catch (e: IllegalStateException) {
                         call.respondUpstreamError("Upstream failure", e, "Analiza slike trenutno nije uspela")
                     } catch (e: Throwable) {
-                        println("[ERROR] Unexpected: ${e.message}")
+                        logger.error("Unexpected: ${e.message}")
                         call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Došlo je do greške na serveru"))
                     }
                 }

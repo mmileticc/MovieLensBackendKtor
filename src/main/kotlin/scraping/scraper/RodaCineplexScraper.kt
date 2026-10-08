@@ -7,6 +7,9 @@ import java.io.IOException
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import org.jsoup.nodes.Document
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("RodaCineplexScraper")
 
 /**
  * rodacineplex.com pripada ISTOJ firmi (Art Vista d.o.o.) i ISTOJ platformi kao Arena Cineplex
@@ -46,11 +49,11 @@ class RodaCineplexScraper : CinemaScraper {
 
             val filmoviSaRepertoara = parseMoviesFromDoc(docRepertoar, isUpcoming = false)
             if (filmoviSaRepertoara.isEmpty()) {
-                println("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
+                logger.info("[$cinemaName] REPERTOAR vratio 0 filmova - snimam HTML za proveru selektora.")
             }
             tekuciFilmovi.addAll(filmoviSaRepertoara)
         } catch (e: IOException) {
-            println("[$cinemaName] Greška pri skrapovanju repertoara: ${e.message}")
+            logger.warn("[$cinemaName] Greška pri skrapovanju repertoara: ${e.message}")
         }
 
         // 2. Skrapovanje sekcije "Uskoro" (isUpcoming = true)
@@ -62,7 +65,7 @@ class RodaCineplexScraper : CinemaScraper {
 
             upcomingFilmovi.addAll(parseMoviesFromDoc(docUskoro, isUpcoming = true))
         } catch (e: IOException) {
-            println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+            logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
         }
 
         // 3. Interna deduplikacija unutar ovog bioskopa (isti obrazac kao Arena Cineplex)
@@ -73,7 +76,7 @@ class RodaCineplexScraper : CinemaScraper {
             if (!filtriranaMapa.containsKey(key)) {
                 filtriranaMapa[key] = upcomingIno
             } else {
-                println("[$cinemaName] [DEDUPLIKACIJA] Preskačem '${key}' iz sekcije Uskoro jer već igra na repertoaru.")
+                logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem '${key}' iz sekcije Uskoro jer već igra na repertoaru.")
             }
         }
 
@@ -104,7 +107,7 @@ class RodaCineplexScraper : CinemaScraper {
 
             if (naslov.isNotEmpty() && link.isNotEmpty()) {
                 val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
-                println("[$cinemaName] [$tipLoga] Pronađen film: $naslov")
+                logger.info("[$cinemaName] [$tipLoga] Pronađen film: $naslov")
 
                 result.add(
                     ScrapedMovie(

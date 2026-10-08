@@ -13,6 +13,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("CineGrandScraper")
 
 data class CineGrandDeepDetails(
     val originalTitle: String?,
@@ -33,7 +36,7 @@ class CineGrandScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/u-bioskopu"
         val urlUskoro = "$baseUrl/uskoro"
 
-        println("[$cinemaName] Inicijalizacija Playwright drajvera...")
+        logger.info("[$cinemaName] Inicijalizacija Playwright drajvera...")
 
         Playwright.create().use { localPlaywright ->
             try {
@@ -54,7 +57,7 @@ class CineGrandScraper : CinemaScraper {
 
                 // 1. SKRAPOVANJE TEKUĆEG REPERTOARA (/u-bioskopu)
                 try {
-                    println("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
+                    logger.info("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
                     page.navigate(urlRepertoar)
                     page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
@@ -63,7 +66,7 @@ class CineGrandScraper : CinemaScraper {
                         parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, vecSkrapovaniLinkovi = emptySet())
                     )
                 } catch (e: Exception) {
-                    println("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
+                    logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
                     // Snimamo tačno šta je browser video u trenutku pada - bez ovoga se sledeći put
                     // opet ne bi znalo da li je selektor promenjen, sajt blokirao bota, ili nešto treće.
                 }
@@ -71,7 +74,7 @@ class CineGrandScraper : CinemaScraper {
                 val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
 
                 try {
-                    println("[$cinemaName] [USKORO] Otvaram stranicu: $urlUskoro")
+                    logger.info("[$cinemaName] [USKORO] Otvaram stranicu: $urlUskoro")
                     page.navigate(urlUskoro)
                     page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
 
@@ -80,13 +83,13 @@ class CineGrandScraper : CinemaScraper {
                         parseMoviesFromDoc(context, docUskoro, isUpcoming = true, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi)
                     )
                 } catch (e: Exception) {
-                    println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+                    logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
                 } finally {
                     context.close()
                     browser.close()
                 }
             } catch (e: Exception) {
-                println("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
+                logger.warn("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
             }
         }
 
@@ -122,7 +125,7 @@ class CineGrandScraper : CinemaScraper {
         val filmovi = doc.select("a.group.block")
         val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
 
-        println("[$cinemaName] [$tipLoga] Pronađeno filmova na stranici: ${filmovi.size}")
+        logger.info("[$cinemaName] [$tipLoga] Pronađeno filmova na stranici: ${filmovi.size}")
 
         for (film in filmovi) {
             var linkFilma = film.attr("href").trim()
@@ -136,11 +139,11 @@ class CineGrandScraper : CinemaScraper {
 
             if (naslov.isNotEmpty() && linkFilma.isNotEmpty()) {
                 if (isUpcoming && vecSkrapovaniLinkovi.contains(cistUrl)) {
-                    println("[$cinemaName] [$tipLoga] Preskačem duboki zahtev za: $naslov (već skinut kroz repertoar)")
+                    logger.info("[$cinemaName] [$tipLoga] Preskačem duboki zahtev za: $naslov (već skinut kroz repertoar)")
                     continue
                 }
 
-                println("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
+                logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
                 val deepDetails = scrapeDeepDetails(context, linkFilma)
 
                 // PROLAZAK KROZ SVE PRONAĐENE LOKACIJE (Unrolling)
@@ -231,7 +234,7 @@ class CineGrandScraper : CinemaScraper {
                 return CineGrandDeepDetails(originalniNaslov, pronadjeneLokacije)
             } catch (e: Exception) {
                 val suffix = if (attempt < maxAttempts) " - retrying" else ""
-                println("[$cinemaName] Greška pri dubokom čitanju za $urlFilma (attempt $attempt/$maxAttempts): ${e.message}$suffix")
+                logger.warn("[$cinemaName] Greška pri dubokom čitanju za $urlFilma (attempt $attempt/$maxAttempts): ${e.message}$suffix")
             } finally {
                 privremenaStranica.close()
             }

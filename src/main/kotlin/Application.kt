@@ -38,8 +38,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import com.milinko.util.CINEMA_ZONE_ID
+import org.slf4j.LoggerFactory
 import scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
+
+private val logger = LoggerFactory.getLogger("Application")
 
 /**
  * Inicijalizacija Ktor aplikacije: ContentNegotiation (kotlinx-json),
@@ -55,7 +58,7 @@ fun Application.module() {
     try {
         FirebaseAdminInitializer.init()
     } catch (e: Exception) {
-        println("[ERROR] Firebase init failed: ${e.message}")
+        logger.error("Firebase init failed: ${e.message}")
         // Ne prekidamo aplikaciju ako Firebase nije dostupan
     }
 
@@ -84,12 +87,11 @@ fun Application.module() {
                     call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = cause.message ?: "Neispravan zahtev"))
                 is BadRequestException -> {
                     // Neispravno telo zahteva (npr. JSON koji ne odgovara DTO-u u call.receive).
-                    println("[WARN] Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
+                    logger.warn("Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
                     call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Neispravan zahtev"))
                 }
                 else -> {
-                    println("[ERROR] Neobrađena greška na ${call.request.local.uri}: ${cause.message}")
-                    cause.printStackTrace()
+                    logger.error("Neobrađena greška na ${call.request.local.uri}: ${cause.message}", cause)
                     call.respond(HttpStatusCode.InternalServerError, ErrorResponse(error = "Došlo je do greške na serveru"))
                 }
             }
@@ -169,8 +171,16 @@ fun Application.module() {
 
     DatabaseFactory.init()
 
-    val repository = ScrapedMoviesRepository()
+    // Repozitorijumi se prave jednom i dele između svih ruta (nemaju stanje osim veze ka bazi).
+    val scrapedMoviesRepository = ScrapedMoviesRepository()
     val userDao = UserDao()
+    val friendshipsRepository = FriendshipsRepository()
+    val userActionsRepository = UserActionsRepository()
+    val tasteProfileRepository = TasteProfileRepository()
+    val moviesRepository = MoviesRepository()
+    val commentsRepository = CommentsRepository()
+    val avatarRepository = AvatarRepository()
+    val movieEmbeddingsRepository = MovieEmbeddingsRepository()
 
     // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
     val apiKey = System.getenv("GEMINI_API_KEY")
@@ -189,26 +199,23 @@ fun Application.module() {
     val omdbService = OmdbService(apiKey = omdbKey)
     warmUpTmdbClient(tmdbService)
 
-    val movieEmbeddingsRepository = MovieEmbeddingsRepository()
-    val geminiCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, GeminiTextEmbedder(geminiService), movieEmbeddingsRepository)
-    val localCinemaSemanticIndex = CinemaSemanticIndex(repository, tmdbService, LocalTextEmbedder(), movieEmbeddingsRepository)
+    val geminiCinemaSemanticIndex = CinemaSemanticIndex(scrapedMoviesRepository, tmdbService, GeminiTextEmbedder(geminiService), movieEmbeddingsRepository)
+    val localCinemaSemanticIndex = CinemaSemanticIndex(scrapedMoviesRepository, tmdbService, LocalTextEmbedder(), movieEmbeddingsRepository)
     val scrapingBoolean = System.getenv("SCRAPING_BOOLEAN")
         ?: environment.config.propertyOrNull("ktor.scraping.enabled")?.getString()
         ?: throw IllegalStateException("SCRAPING_BOOLEAN nije postavljen (ENV) niti u application.yaml pod 'ktor.scraping.enabled'.")
 
 
     if (scrapingBoolean.lowercase() == "true") {
-        configureScrapingLifecycle(tmdbService, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+        configureScrapingLifecycle(scrapedMoviesRepository, tmdbService, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     } else {
-        configureSemanticIndexRefresh(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
+        configureSemanticIndexRefresh(scrapedMoviesRepository, geminiCinemaSemanticIndex, localCinemaSemanticIndex)
     }
-    configureRouting(geminiService, tmdbService, repository, userDao, jwtSigningKey)
-    configureMovieRouting(tmdbService, FriendshipsRepository(), UserActionsRepository(), TasteProfileRepository(), repository, geminiCinemaSemanticIndex, localCinemaSemanticIndex, omdbService)
-    configureUserActionsRouting(tmdbService, UserActionsRepository(), MoviesRepository(), TasteProfileRepository(), userDao, FriendshipsRepository())
-    configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
-    configureCommentsRouting(tmdbService, CommentsRepository(), MoviesRepository(), FriendshipsRepository(), userDao)
-
-    val avatarRepository = AvatarRepository()
+    configureRouting(geminiService, tmdbService, scrapedMoviesRepository, userDao, jwtSigningKey)
+    configureMovieRouting(tmdbService, friendshipsRepository, userActionsRepository, tasteProfileRepository, scrapedMoviesRepository, geminiCinemaSemanticIndex, localCinemaSemanticIndex, omdbService)
+    configureUserActionsRouting(tmdbService, userActionsRepository, moviesRepository, tasteProfileRepository, userDao, friendshipsRepository)
+    configureFriendsRouting(friendshipsRepository, userDao, userActionsRepository, tasteProfileRepository, tmdbService)
+    configureCommentsRouting(tmdbService, commentsRepository, moviesRepository, friendshipsRepository, userDao)
     configureAvatarRouting(avatarRepository)
     migrateInlineAvatars(avatarRepository)
 }
@@ -225,7 +232,7 @@ data class ErrorResponse(val error: String)
  * odgovora spoljnog servisa (videti napomenu kod StatusPages).
  */
 suspend fun ApplicationCall.respondUpstreamError(logTag: String, e: Throwable, publicMessage: String) {
-    println("[ERROR] $logTag: ${e.message}")
+    logger.error("$logTag: ${e.message}")
     respond(HttpStatusCode.BadGateway, ErrorResponse(publicMessage))
 }
 
@@ -234,9 +241,9 @@ fun Application.migrateInlineAvatars(avatarRepository: AvatarRepository) {
     launch {
         try {
             val migrated = avatarRepository.migrateInlineAvatars()
-            if (migrated > 0) println("[AVATAR] Prebačeno $migrated avatara iz users.avatar_url u user_avatars.")
+            if (migrated > 0) logger.info("Prebačeno $migrated avatara iz users.avatar_url u user_avatars.")
         } catch (e: Exception) {
-            println("[ERROR] Migracija avatara nije uspela (pokušaće ponovo pri sledećem startu): ${e.message}")
+            logger.error("Migracija avatara nije uspela (pokušaće ponovo pri sledećem startu): ${e.message}")
         }
     }
 }
@@ -251,26 +258,26 @@ fun Application.migrateInlineAvatars(avatarRepository: AvatarRepository) {
 fun Application.warmUpTmdbClient(tmdbService: TmdbService) {
     launch {
         try {
-            println("[TMDB] Zagrevanje HTTP konekcije...")
+            logger.info("[TMDB] Zagrevanje HTTP konekcije...")
             val movies = tmdbService.getPopularMovies(1)
-            println("[TMDB] Zagrevanje uspešno (${movies.size} popularnih filmova učitano u keš).")
+            logger.info("[TMDB] Zagrevanje uspešno (${movies.size} popularnih filmova učitano u keš).")
         } catch (e: Exception) {
-            println("[WARN] TMDB zagrevanje nije uspelo, nije kritično - prvi pravi zahtev će pokušati ponovo: ${e.message}")
+            logger.warn("TMDB zagrevanje nije uspelo, nije kritično - prvi pravi zahtev će pokušati ponovo: ${e.message}")
         }
     }
 }
 
 
 fun Application.configureScrapingLifecycle(
+    repository: ScrapedMoviesRepository,
     tmdbService: TmdbService,
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
-    val repository = ScrapedMoviesRepository()
 
     launch {
         try {
-            println("[REPREZENTACIJA] Provera stanja i svežine baze podataka...")
+            logger.info("[REPREZENTACIJA] Provera stanja i svežine baze podataka...")
 
             val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
             val datumPoslednjegSkrapovanja = repository.getLatestScrapeDate()
@@ -280,9 +287,9 @@ fun Application.configureScrapingLifecycle(
 
             if (trebaSkrapovati) {
                 if (datumPoslednjegSkrapovanja == null) {
-                    println("[LOG] Baza je potpuno prazna. Pokrećem skraper...")
+                    logger.info("Baza je potpuno prazna. Pokrećem skraper...")
                 } else {
-                    println("[LOG] Podaci u bazi su zastareli (Zadnji upis: $datumPoslednjegSkrapovanja, Danas je: $danasnjiDatum). Pokrećem osvežavanje...")
+                    logger.info("Podaci u bazi su zastareli (Zadnji upis: $datumPoslednjegSkrapovanja, Danas je: $danasnjiDatum). Pokrećem osvežavanje...")
                 }
 
                 val engine = ScrapingEngineConcurrent(sviAktivniScraperi())
@@ -290,36 +297,35 @@ fun Application.configureScrapingLifecycle(
                 //
 
                 //dodati zvakom filmo njegov tmdb id
-                println("[LOG] Pretraga TMDB ID-ja svakom pronadjenom filmu.")
+                logger.info("Pretraga TMDB ID-ja svakom pronadjenom filmu.")
                 val obogaceniFilmovi = skrapovaniFilmovi.enrichWithTmdbIds(tmdbService)
-                println("[LOG] Zacrsena pretraga TMDB ID-jeva.")
+                logger.info("Zacrsena pretraga TMDB ID-jeva.")
 
                 //
                 if (skrapovaniFilmovi.isNotEmpty()) {
 
 
                     val saIdjem = obogaceniFilmovi.count { it.tmdbId != null }
-                    println("[LOG] Enrichment gotov. Pronadjeno TMDB ID-jeva: $saIdjem od ${obogaceniFilmovi.size}")
+                    logger.info("Enrichment gotov. Pronadjeno TMDB ID-jeva: $saIdjem od ${obogaceniFilmovi.size}")
 
                     repository.insertScrapedMovies(obogaceniFilmovi)
-                    println("[LOG] Novo skrapovanje završeno i sveži podaci su upisani u Supabase.")
+                    logger.info("Novo skrapovanje završeno i sveži podaci su upisani u Supabase.")
 
                 } else {
-                    println("[WARN] Skraper je pokrenut ali nije pronašao nijedan film na sajtovima.")
+                    logger.warn("Skraper je pokrenut ali nije pronašao nijedan film na sajtovima.")
                 }
 
             } else {
-                println("[LOG] Podaci u bazi su sveži (Od danas su: $datumPoslednjegSkrapovanja). Skrapovanje je preskočeno!")
+                logger.info("Podaci u bazi su sveži (Od danas su: $datumPoslednjegSkrapovanja). Skrapovanje je preskočeno!")
 
                 val filmoviIzBaze = repository.getAllScrapedMovies()
-                println("[LOG] Učitano ${filmoviIzBaze.size} filmova direktno iz Supabase-a za rad aplikacije.")
+                logger.info("Učitano ${filmoviIzBaze.size} filmova direktno iz Supabase-a za rad aplikacije.")
             }
 
             refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
 
         } catch (e: Exception) {
-            println("[ERROR] Greška tokom inicijalizacije podataka: ${e.localizedMessage}")
-            e.printStackTrace()
+            logger.error("Greška tokom inicijalizacije podataka: ${e.localizedMessage}", e)
         }
     }
 }
@@ -339,19 +345,19 @@ fun Application.configureScrapingLifecycle(
  * za filmove čiji se tekst promenio - videti MovieEmbeddingsTable keš).
  */
 fun Application.configureSemanticIndexRefresh(
+    repository: ScrapedMoviesRepository,
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
-    val repository = ScrapedMoviesRepository()
     val intervalMinuta = System.getenv("SEMANTIC_INDEX_POLL_MINUTES")?.toLongOrNull()?.takeIf { it > 0 } ?: 60L
 
     launch {
-        println("[LOG] SCRAPING_BOOLEAN nije 'true' - skrejpovanje se preskače na ovom hostu, ali semantički indeksi se i dalje pune iz postojećih podataka u bazi (provera novih podataka svakih $intervalMinuta min).")
+        logger.info("SCRAPING_BOOLEAN nije 'true' - skrejpovanje se preskače na ovom hostu, ali semantički indeksi se i dalje pune iz postojećih podataka u bazi (provera novih podataka svakih $intervalMinuta min).")
 
         var poslednjiViden = try {
             repository.getLatestScrapeTimestamp()
         } catch (e: Exception) {
-            println("[WARN] Čitanje poslednjeg vremena skrejpovanja nije uspelo: ${e.localizedMessage}")
+            logger.warn("Čitanje poslednjeg vremena skrejpovanja nije uspelo: ${e.localizedMessage}")
             null
         }
         refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
@@ -361,12 +367,12 @@ fun Application.configureSemanticIndexRefresh(
             try {
                 val najnoviji = repository.getLatestScrapeTimestamp()
                 if (najnoviji != null && najnoviji != poslednjiViden) {
-                    println("[LOG] Novi skrejpovani podaci u bazi ($poslednjiViden -> $najnoviji UTC) - osvežavam semantičke indekse.")
+                    logger.info("Novi skrejpovani podaci u bazi ($poslednjiViden -> $najnoviji UTC) - osvežavam semantičke indekse.")
                     refreshSemanticIndices(geminiCinemaSemanticIndex, localCinemaSemanticIndex)
                     poslednjiViden = najnoviji
                 }
             } catch (e: Exception) {
-                println("[WARN] Periodična provera novih skrejpovanih podataka nije uspela, pokušavam ponovo za $intervalMinuta min: ${e.localizedMessage}")
+                logger.warn("Periodična provera novih skrejpovanih podataka nije uspela, pokušavam ponovo za $intervalMinuta min: ${e.localizedMessage}")
             }
         }
     }
@@ -387,8 +393,7 @@ suspend fun refreshSemanticIndices(
     try {
         geminiCinemaSemanticIndex.refresh()
     } catch (e: Exception) {
-        println("[ERROR] CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}")
-        e.printStackTrace()
+        logger.error("CinemaSemanticIndex (Gemini).refresh() nije uspeo: ${e.localizedMessage}", e)
     }
 
     val localEmbeddingEnabled = System.getenv("ENABLE_LOCAL_EMBEDDING")?.equals("true", ignoreCase = true) == true
@@ -398,10 +403,9 @@ suspend fun refreshSemanticIndices(
         } catch (e: Throwable) {
             // `Throwable` namerno (ne `Exception`) - baš OutOfMemoryError je razlog zašto
             // ovaj blok uopšte postoji, videti napomenu iznad.
-            println("[ERROR] CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}")
-            e.printStackTrace()
+            logger.error("CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}", e)
         }
     } else {
-        println("[LOG] ENABLE_LOCAL_EMBEDDING nije postavljen na 'true' - lokalni MiniLM indeks se ne puni (ostaje prazan, engine=local vraća praznu listu).")
+        logger.info("ENABLE_LOCAL_EMBEDDING nije postavljen na 'true' - lokalni MiniLM indeks se ne puni (ostaje prazan, engine=local vraća praznu listu).")
     }
 }

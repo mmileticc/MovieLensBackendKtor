@@ -20,6 +20,9 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("TmdbService")
 
 class TmdbService(private val apiKey: String) {
 
@@ -97,7 +100,7 @@ class TmdbService(private val apiKey: String) {
                     e is SocketTimeoutException ||
                     e.message?.contains("timeout", ignoreCase = true) == true
                 if (!isTransient || attempt == attempts - 1) throw e
-                println("[WARN] TMDB poziv timeout (pokušaj ${attempt + 1}/$attempts), ponavljam odmah: ${e.message}")
+                logger.warn("TMDB poziv timeout (pokušaj ${attempt + 1}/$attempts), ponavljam odmah: ${e.message}")
                 delay(300)
             }
         }
@@ -125,9 +128,9 @@ class TmdbService(private val apiKey: String) {
             throw IllegalStateException("TMDB search error: HTTP ${response.status.value}. ${unauthorizedHint(response.status)} Body=${bodyText.take(300)}")
         }
         val body: TmdbSearchResponse = response.body()
-        println("[DEBUG] Broj rezultata u JSON-u: ${body.results.size}")
+        logger.debug("Broj rezultata u JSON-u: ${body.results.size}")
         if (body.results.isNotEmpty()) {
-            println("[DEBUG] Prvi rezultat ID: ${body.results.first().id}")
+            logger.debug("Prvi rezultat ID: ${body.results.first().id}")
         }
         val result = body.results.map { r ->
             TmdbMovieMatch(
@@ -582,7 +585,7 @@ suspend fun List<ScrapedMovie>.enrichWithTmdbIds(
         val searchResults = try {
             tmdbService.searchMovies(movie.originalTitle ?: movie.title)
         } catch (e: Exception) {
-            println("[ERROR] Enrichment failed for ${movie.title}: ${e.message}")
+            logger.error("Enrichment failed for ${movie.title}: ${e.message}")
             emptyList<TmdbMovieMatch>()
         }
 

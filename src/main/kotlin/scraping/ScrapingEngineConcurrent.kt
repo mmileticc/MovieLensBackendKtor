@@ -4,31 +4,34 @@ import com.milinko.scraping.model.ScrapedMovie
 import com.milinko.scraping.scraper.CinemaScraper
 import kotlinx.coroutines.*
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("ScrapingEngineConcurrent")
 
 class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
 
     // Dodajemo 'suspend' ključnu reč jer funkcija sada koristi korutine
     suspend fun runAllScrapers(date: LocalDate = LocalDate.now()): List<ScrapedMovie> = coroutineScope {
-        println("=== POKRETANJE PARALELNOG GLOBALNOG SKRAPOVANJA FOR DATE: $date ===")
+        logger.info("=== POKRETANJE PARALELNOG GLOBALNOG SKRAPOVANJA FOR DATE: $date ===")
         val startTimeEngine = System.currentTimeMillis()
 
         // 1. Pokrećemo sve scrapere paralelno na IO nitima
         val poslovi = scrapers.map { scraper ->
             // async pokreće korutinu u pozadini i vraća "obećanje" (Deferred) da će dati rezultat
             async(Dispatchers.IO) {
-                println("\n[Engine] Pokrećem paralelnu nit za: ${scraper.cinemaName}")
+                logger.info("[Engine] Pokrećem paralelnu nit za: ${scraper.cinemaName}")
                 val startTimeScraper = System.currentTimeMillis()
 
 
                 val rezultati = try {
                     scraper.scrape(date)
                 } catch (e: Exception) {
-                    println("[Engine] KRITIČNA greška u scraperu ${scraper.cinemaName} - ostali scraperi nastavljaju normalno: ${e.message}")
+                    logger.warn("[Engine] KRITIČNA greška u scraperu ${scraper.cinemaName} - ostali scraperi nastavljaju normalno: ${e.message}")
                     emptyList()
                 }
 
                 val duration = (System.currentTimeMillis() - startTimeScraper) / 1000
-                println("[Engine] Završio ${scraper.cinemaName} za $duration sekundi. Nađeno: ${rezultati.size}")
+                logger.info("[Engine] Završio ${scraper.cinemaName} za $duration sekundi. Nađeno: ${rezultati.size}")
 
                 rezultati
             }
@@ -42,9 +45,9 @@ class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
         val ukupnoVreme = (System.currentTimeMillis() - startTimeEngine) / 1000
         
 
-        println("\n=== SVI BIOSKOPI SU USPEŠNO PARALELNO PROCESUIRANI ===")
-        println("Ukupno skupljeno filmova za bazu: ${finalniFilmovi.size}")
-        println("Ukupno vreme izvršavanja celog engine-a: $ukupnoVreme sekundi")
+        logger.info("=== SVI BIOSKOPI SU USPEŠNO PARALELNO PROCESUIRANI ===")
+        logger.info("Ukupno skupljeno filmova za bazu: ${finalniFilmovi.size}")
+        logger.info("Ukupno vreme izvršavanja celog engine-a: $ukupnoVreme sekundi")
 
         return@coroutineScope finalniFilmovi
     }

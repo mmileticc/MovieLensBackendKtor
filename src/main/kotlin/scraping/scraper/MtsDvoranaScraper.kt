@@ -6,6 +6,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.io.IOException
 import java.time.LocalDate
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("MtsDvoranaScraper")
 
 class MtsDvoranaScraper : CinemaScraper {
     override val cinemaName = "MTS Dvorana"
@@ -32,7 +35,7 @@ class MtsDvoranaScraper : CinemaScraper {
 
             tekuciFilmovi.addAll(parseMoviesFromDoc(docRepertoar, isUpcoming = false, vecSkrapovaniLinkovi = emptySet()))
         } catch (e: IOException) {
-            println("[$cinemaName] Greška pri skrapovanju glavne stranice repertoara: ${e.message}")
+            logger.warn("[$cinemaName] Greška pri skrapovanju glavne stranice repertoara: ${e.message}")
         }
 
         // Pravimo skup linkova koji već igraju na repertoaru da bismo preskočili njihovo ponovno skrapovanje unutar "Uskoro"
@@ -47,7 +50,7 @@ class MtsDvoranaScraper : CinemaScraper {
 
             upcomingFilmovi.addAll(parseMoviesFromDoc(docUskoro, isUpcoming = true, vecSkrapovaniLinkovi = skrapovaniLinkoviNaRepertoaru))
         } catch (e: IOException) {
-            println("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+            logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
         }
 
         // 3. Interna deduplikacija pomoću originalTitle (ili title ako je originalTitle null)
@@ -59,7 +62,7 @@ class MtsDvoranaScraper : CinemaScraper {
             if (!filtriranaMapa.containsKey(kljuc)) {
                 filtriranaMapa[kljuc] = upcomingIno
             } else {
-                println("[$cinemaName] [DEDUPLIKACIJA] Preskačem '${upcomingIno.title}' iz sekcije Uskoro jer već postoji na repertoaru.")
+                logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem '${upcomingIno.title}' iz sekcije Uskoro jer već postoji na repertoaru.")
             }
         }
 
@@ -91,14 +94,14 @@ class MtsDvoranaScraper : CinemaScraper {
                 // Pametna provera: Ako film iz "Uskoro" sekcije ima link koji smo VEĆ skrapovali na repertoaru,
                 // preskačemo otvaranje njegove stranice jer je on stoprocentni duplikat.
                 if (isUpcoming && vecSkrapovaniLinkovi.contains(link)) {
-                    println("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz repertoar)")
+                    logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz repertoar)")
                     continue
                 }
 
                 val nasumicnaPauza = (500..1500).random().toLong()
                 Thread.sleep(nasumicnaPauza)
 
-                println("[$cinemaName] [$tipLoga] Obrada filma: $naslov")
+                logger.info("[$cinemaName] [$tipLoga] Obrada filma: $naslov")
 
                 // Otvaramo pojedinačnu stranicu filma samo ako je potrebno
                 val originalniNaslov = scrapeOriginalTitle(link)
@@ -134,7 +137,7 @@ class MtsDvoranaScraper : CinemaScraper {
             val originalTitle = doc.select(".hf-original").first()?.text()?.trim().orEmpty()
             originalTitle.ifEmpty { null }
         } catch (e: IOException) {
-            println("[$cinemaName] Greška pri učitavanju stranice filma: $urlFilma -> ${e.message}")
+            logger.warn("[$cinemaName] Greška pri učitavanju stranice filma: $urlFilma -> ${e.message}")
             null
         }
     }

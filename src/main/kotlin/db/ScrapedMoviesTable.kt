@@ -18,6 +18,9 @@ import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("ScrapedMoviesTable")
 
 // 1. Mapiranje tabele iz baze u Kotlin objekat
 object ScrapedMoviesTable : Table("scraped_movies") {
@@ -58,12 +61,12 @@ class ScrapedMoviesRepository {
     suspend fun insertScrapedMovies(moviesList: List<ScrapedMovie>) = dbQuery {
         val bioskopiZaZamenu = moviesList.map { it.cinemaName }.distinct()
         if (bioskopiZaZamenu.isEmpty()) {
-            println("[DATABASE] Nijedan scraper nije vratio nijedan film ovog ciklusa - baza se ne dira, stari podaci ostaju.")
+            logger.info("[DATABASE] Nijedan scraper nije vratio nijedan film ovog ciklusa - baza se ne dira, stari podaci ostaju.")
             return@dbQuery
         }
 
         val obrisanoRedova = ScrapedMoviesTable.deleteWhere { ScrapedMoviesTable.cinemaName inList bioskopiZaZamenu }
-        println("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
+        logger.info("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
 
         // Jedan batch umesto ~500 pojedinačnih INSERT-a (uz reWriteBatchedInserts u JDBC URL-u
         // drajver ih spaja u višeredne INSERT naredbe).
@@ -78,7 +81,7 @@ class ScrapedMoviesRepository {
             this[ScrapedMoviesTable.isUpcoming] = movie.isUpcoming
             this[ScrapedMoviesTable.tmdbId] = movie.tmdbId
         }
-        println("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
+        logger.info("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
     }
 
     suspend fun isDatabaseEmpty(): Boolean = dbQuery {

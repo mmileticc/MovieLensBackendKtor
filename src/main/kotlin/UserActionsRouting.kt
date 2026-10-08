@@ -25,6 +25,9 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("UserActionsRouting")
 
 /**
  * Watchlist i "odgledano"/ocena (Faza 2, MOVIELENS_ROADMAP.md). Sve rute su iza JWT auth-a i
@@ -181,7 +184,7 @@ private fun Application.backfillMovieCache(
             try {
                 moviesRepository.ensureCached(row.tmdbId.toInt(), tmdbService)
             } catch (e: Exception) {
-                println("[WARN] Dopuna keša filma ${row.tmdbId} nije uspela: ${e.message}")
+                logger.warn("Dopuna keša filma ${row.tmdbId} nije uspela: ${e.message}")
             }
         }
     }

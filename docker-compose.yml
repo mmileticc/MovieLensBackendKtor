@@ -37,6 +37,10 @@ services:
       DB_NAME: postgres
       DB_USER: postgres
       DB_PASSWORD: postgres
+      DB_SSLMODE: disable
+      APP_JWT_SIGNING_KEY: ${APP_JWT_SIGNING_KEY}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON}
+      SCRAPING_BOOLEAN: "false"
     depends_on:
       postgres:
         condition: service_healthy

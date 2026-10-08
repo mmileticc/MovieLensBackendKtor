@@ -7,6 +7,9 @@ import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("DatabaseFactory")
 
 object DatabaseFactory {
     fun init() {
@@ -21,15 +24,17 @@ object DatabaseFactory {
 
         // Za Supabase pooler.supabase.com - trebaju dodatni parametri
         val isPooler = host.contains("pooler.supabase.com")
+        // Supabase zahteva SSL; lokalni Postgres iz docker-compose.yml ga nema (DB_SSLMODE=disable).
+        val sslMode = System.getenv("DB_SSLMODE")?.trim()?.ifBlank { null } ?: "require"
         val jdbcUrl = if (isPooler) {
             // Connection pooler (port 6543) - zahteva extra parametri za SNI
-            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&reWriteBatchedInserts=true&application_name=movielens&options=-c%20search_path%3Dpublic"
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=$sslMode&prepareThreshold=0&reWriteBatchedInserts=true&application_name=movielens&options=-c%20search_path%3Dpublic"
         } else {
             // Direct connection (port 5432)
-            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&reWriteBatchedInserts=true"
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=$sslMode&prepareThreshold=0&reWriteBatchedInserts=true"
         }
 
-        println("[DATABASE] Povezujem: $host:$port (${if (isPooler) "Pooler" else "Direct"})")
+        logger.info("[DATABASE] Povezujem: $host:$port (${if (isPooler) "Pooler" else "Direct"})")
 
         // Pool konekcija - bez njega Exposed otvara novu SSL konekciju ka Supabase-u za svaku
         // transakciju (stotine ms po upitu). Pool je mali jer Supabase pooler ograničava broj
@@ -50,7 +55,7 @@ object DatabaseFactory {
             validate()
         })
         Database.connect(dataSource)
-        println("[DATABASE] Uspešno uspostavljena veza sa Supabase PostgreSQL bazom!")
+        logger.info("[DATABASE] Uspešno uspostavljena veza sa Supabase PostgreSQL bazom!")
 
         // Šema se generiše direktno iz Exposed tabela — jedan izvor istine u kodu, bez ručnog
         // SQL-a koji vremenom ode iz sinhronizacije sa kodom. createMissingTablesAndColumns je
@@ -75,7 +80,7 @@ object DatabaseFactory {
                 UserAvatarsTable
             )
         }
-        println("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings, movie_comments, comment_likes, user_avatars).")
+        logger.info("[DATABASE] Šema baze proverena/ažurirana (users, scraped_movies, movies, user_actions, friendships, notifications, movie_embeddings, movie_comments, comment_likes, user_avatars).")
     }
 
     // Pomoćna funkcija koja obezbeđuje da se SQL upiti izvršavaju u pozadinskom threadu (IO)

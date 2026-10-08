@@ -237,6 +237,9 @@ MovieLensBackendKtor/
 | `DB_NAME` | No (default `postgres`) | Database name |
 | `DB_USER` | No (default `postgres`) | Database user |
 | `DB_PASSWORD` | Yes | Database password |
+| `DB_SSLMODE` | No (default `require`) | Postgres `sslmode`; `disable` for the local Postgres in `docker-compose.yml` |
+| `DB_POOL_SIZE` | No (default `5`) | HikariCP maximum pool size (keep small - the Supabase pooler limits client connections) |
+| `PUBLIC_BASE_URL` | No | Public server URL (e.g. `https://movielensbackendktor.onrender.com`); turns stored avatar paths into absolute URLs in responses, needed by app versions that can't resolve relative URLs |
 | `SCRAPING_BOOLEAN` | Yes | `"true"` to run the cinema scrapers on this instance; `"false"` to only serve reads and refresh the semantic index from existing data |
 | `OMDB_API_KEY` | No | Enables IMDb/Rotten Tomatoes enrichment; ratings silently omitted if unset |
 | `ALLOWED_ORIGINS` | No | Comma-separated origin allowlist for CORS; defaults to `anyHost()` |
