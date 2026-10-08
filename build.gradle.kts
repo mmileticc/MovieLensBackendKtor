@@ -91,6 +91,7 @@ dependencies {
 
     // PostgreSQL drajver
     implementation("org.postgresql:postgresql:42.7.11")
+    implementation("com.zaxxer:HikariCP:6.2.1")
 
     // Firebase Admin SDK
     implementation("com.google.firebase:firebase-admin:9.4.2")

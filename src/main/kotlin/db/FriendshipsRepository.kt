@@ -46,6 +46,28 @@ class FriendshipsRepository {
                 ((FriendshipsTable.senderId eq otherUserId) and (FriendshipsTable.receiverId eq userId))
         }.firstOrNull() ?: return@dbQuery FriendshipStatus.NONE
 
+        statusFromRow(row, userId)
+    }
+
+    /**
+     * Status prema više korisnika jednim upitom (npr. rezultati pretrage korisnika). Korisnik bez
+     * reda u `friendships` dobija NONE.
+     */
+    suspend fun getFriendshipStatuses(userId: String, otherUserIds: List<String>): Map<String, FriendshipStatus> {
+        if (otherUserIds.isEmpty()) return emptyMap()
+        val found = dbQuery {
+            FriendshipsTable.select {
+                ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId inList otherUserIds)) or
+                    ((FriendshipsTable.receiverId eq userId) and (FriendshipsTable.senderId inList otherUserIds))
+            }.associate { row ->
+                val otherId = if (row[FriendshipsTable.senderId] == userId) row[FriendshipsTable.receiverId] else row[FriendshipsTable.senderId]
+                otherId to statusFromRow(row, userId)
+            }
+        }
+        return otherUserIds.associateWith { found[it] ?: FriendshipStatus.NONE }
+    }
+
+    private fun statusFromRow(row: org.jetbrains.exposed.sql.ResultRow, userId: String): FriendshipStatus =
         when (row[FriendshipsTable.status]) {
             STATUS_ACCEPTED -> FriendshipStatus.ACCEPTED
             STATUS_PENDING -> if (row[FriendshipsTable.senderId] == userId) {
@@ -55,7 +77,6 @@ class FriendshipsRepository {
             }
             else -> FriendshipStatus.NONE
         }
-    }
 
     /**
      * Šalje zahtev za prijateljstvo. Ako otherUserId već ima poslat zahtev ka userId (obrnut

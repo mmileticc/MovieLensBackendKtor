@@ -29,7 +29,7 @@ import java.util.*
  */
 object UsersTable : Table("users") {
     val id = varchar("id", 64).clientDefault { UUID.randomUUID().toString() }
-    val firebaseUid = varchar("firebase_uid", 255).uniqueIndex()
+    val firebaseUid = varchar("firebase_uid", 255).uniqueIndex("idx_users_firebase_uid")
     val username = varchar("username", 255).nullable()
     val email = varchar("email", 255).nullable()
     val avatarUrl = text("avatar_url").nullable()
@@ -43,6 +43,13 @@ object UsersTable : Table("users") {
     }
     val lastLogin = datetime("last_login").nullable()
     override val primaryKey = PrimaryKey(id)
+
+    init {
+        // Indeksi već postoje u bazi; mapirani ovde da ih Exposed ne prijavljuje kao nepoznate.
+        index("idx_users_email", false, email)
+        index("idx_users_created_at", false, createdAt)
+        index("idx_users_last_login", false, lastLogin)
+    }
 }
 
 /**

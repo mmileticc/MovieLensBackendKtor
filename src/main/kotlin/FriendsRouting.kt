@@ -196,13 +196,14 @@ fun Application.configureFriendsRouting(
                     return@get call.respond(UserSearchResponseDto(emptyList()))
                 }
 
-                val results = userDao.searchUsers(query, excludeUserId = callerId).map { user ->
-                    val status = friendshipsRepository.getFriendshipStatus(callerId, user.id)
+                val users = userDao.searchUsers(query, excludeUserId = callerId)
+                val statuses = friendshipsRepository.getFriendshipStatuses(callerId, users.map { it.id })
+                val results = users.map { user ->
                     UserSearchResultDto(
                         id = user.id,
                         username = user.username,
                         avatarUrl = user.avatarUrl,
-                        status = status.name
+                        status = (statuses[user.id] ?: FriendshipStatus.NONE).name
                     )
                 }
                 call.respond(UserSearchResponseDto(results))
@@ -220,13 +221,12 @@ fun Application.configureFriendsRouting(
                     get {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
-                        // Faza 4, korak 2: pravi match_score/common_genres umesto placeholder 0f/empty.
-                        // Self profil se računa jednom, pa se poredi sa svakim prijateljem posebno -
-                        // sasvim u redu za male liste prijatelja (diplomski obim, ne treba optimizacija).
-                        val selfProfile = tasteProfileRepository.getTasteProfile(userId)
-                        val friends = friendshipsRepository.getFriends(userId).map { friend ->
-                            val friendProfile = tasteProfileRepository.getTasteProfile(friend.id)
-                            val match = compareTasteProfiles(selfProfile, friendProfile)
+                        // Profili svih prijatelja i korisnika jednim upitom, pa se korisnik poredi sa svakim.
+                        val friendUsers = friendshipsRepository.getFriends(userId)
+                        val profiles = tasteProfileRepository.getTasteProfiles(friendUsers.map { it.id } + userId)
+                        val selfProfile = profiles[userId].orEmpty()
+                        val friends = friendUsers.map { friend ->
+                            val match = compareTasteProfiles(selfProfile, profiles[friend.id].orEmpty())
                             friend.toFriendDto(match.matchScore, match.commonGenres)
                         }
                         call.respond(FriendsResponseDto(friends))
@@ -293,8 +293,9 @@ fun Application.configureFriendsRouting(
                             // Ograničen preview - presek žanrovskih interesovanja (isti
                             // compareTasteProfiles helper kao /friends lista), bez otkrivanja
                             // ičega o gledanim filmovima.
-                            val selfProfile = tasteProfileRepository.getTasteProfile(userId)
-                            val friendProfile = tasteProfileRepository.getTasteProfile(friendId)
+                            val profiles = tasteProfileRepository.getTasteProfiles(listOf(userId, friendId))
+                            val selfProfile = profiles[userId].orEmpty()
+                            val friendProfile = profiles[friendId].orEmpty()
                             val match = compareTasteProfiles(selfProfile, friendProfile)
                             return@get call.respond(
                                 FriendProfileResponseDto(
@@ -353,8 +354,9 @@ fun Application.configureFriendsRouting(
                             return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Predlozi su dostupni samo za prijatelje"))
                         }
 
-                        val selfProfile = tasteProfileRepository.getTasteProfile(userId)
-                        val friendProfile = tasteProfileRepository.getTasteProfile(friendId)
+                        val profiles = tasteProfileRepository.getTasteProfiles(listOf(userId, friendId))
+                        val selfProfile = profiles[userId].orEmpty()
+                        val friendProfile = profiles[friendId].orEmpty()
                         val match = compareTasteProfiles(selfProfile, friendProfile)
                         val friendUsername = userDao.findById(friendId)?.username
 

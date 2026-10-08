@@ -1,6 +1,7 @@
 package com.milinko.db
 
 import com.milinko.db.DatabaseFactory.dbQuery
+import com.milinko.services.TmdbGenre
 import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.select
@@ -78,62 +79,78 @@ fun compareTasteProfiles(self: List<GenreAffinity>, friend: List<GenreAffinity>)
 
 class TasteProfileRepository {
 
-    suspend fun getTasteProfile(userId: String): List<GenreAffinity> = dbQuery {
+    suspend fun getTasteProfile(userId: String): List<GenreAffinity> =
+        getTasteProfiles(listOf(userId))[userId].orEmpty()
+
+    /**
+     * Taste profili za više korisnika jednim upitom (npr. lista prijatelja, gde se svaki prijatelj
+     * poredi sa korisnikom). Korisnik bez ocena dobija praznu listu.
+     */
+    suspend fun getTasteProfiles(userIds: List<String>): Map<String, List<GenreAffinity>> {
+        if (userIds.isEmpty()) return emptyMap()
         // "WATCHED" je isti string literal kao ACTION_WATCHED u UserActionsRepository.kt (private
         // tamo, pa se ne uvozi - vidi napomenu tamo za kontekst WATCHLIST/WATCHED dizajna).
-        val ratedRows = UserActionsTable
-            .join(MoviesTable, JoinType.INNER, additionalConstraint = { UserActionsTable.movieId eq MoviesTable.tmdbId })
-            .select {
-                (UserActionsTable.userId eq userId) and
-                    (UserActionsTable.actionType eq "WATCHED") and
-                    (UserActionsTable.rating.isNotNull())
-            }
-            .map { row -> row[UserActionsTable.rating]!! to decodeGenres(row[MoviesTable.genres]) }
-
-        // Grupiše se po genreId (ne po imenu - stabilnije, izbegava eventualne duple/lokalizovane
-        // nazive), ime se čuva samo za prikaz.
-        val ratingSumByGenreId = mutableMapOf<Int, Double>()
-        val countByGenreId = mutableMapOf<Int, Int>()
-        val nameByGenreId = mutableMapOf<Int, String>()
-        for ((rating, genres) in ratedRows) {
-            for (genre in genres) {
-                ratingSumByGenreId[genre.id] = (ratingSumByGenreId[genre.id] ?: 0.0) + rating
-                countByGenreId[genre.id] = (countByGenreId[genre.id] ?: 0) + 1
-                nameByGenreId[genre.id] = genre.name
-            }
+        val ratedRowsByUser = dbQuery {
+            UserActionsTable
+                .join(MoviesTable, JoinType.INNER, additionalConstraint = { UserActionsTable.movieId eq MoviesTable.tmdbId })
+                .select {
+                    (UserActionsTable.userId inList userIds) and
+                        (UserActionsTable.actionType eq "WATCHED") and
+                        (UserActionsTable.rating.isNotNull())
+                }
+                .map { row ->
+                    row[UserActionsTable.userId] to (row[UserActionsTable.rating]!! to decodeGenres(row[MoviesTable.genres]))
+                }
+                .groupBy({ it.first }, { it.second })
         }
-
-        // Bag korigovan (16. avgust 2026, korisnička žalba "predlozi nekad bas brljaju"): ranije se
-        // rangiralo ČISTO po averageRating (pa tek onda po movieCount kao tie-breaker), što znači da
-        // je JEDAN film ocenjen 10/10 u sporednom žanru upadao na vrh profila iznad žanra sa npr. 15
-        // filmova i prosekom 8/10 - taj slučajni/sporedni žanr bi onda dominirao "Predloženo za
-        // tebe".
-        //
-        // Dorada #2 (16. avgust 2026, korisnik pokazao konkretan primer): prvi pokušaj (Bayesian
-        // shrinkage ka korisnikovom globalnom proseku) NIJE bio dovoljan - npr. Fantasy(10.0, 1 film)
-        // je ostajao iznad Action(9.5, 4 filma), jer shrinkage-ka-proseku matematički NE MOŽE da
-        // obrne redosled dva žanra čiji sirovi proseci padaju sa suprotnih strana proseka (žanr iznad
-        // proseka se povlači naniže ali nikad ne padne ispod njega samo zbog malog uzorka). Zamenjeno
-        // sa "kazna po neizvesnosti" (isti duh kao Wilson/lower-confidence-bound rangiranje) -
-        // oduzima se CONFIDENCE_PENALTY_Z / sqrt(movieCount) direktno od ocene, bez oslanjanja na bilo
-        // čiji prosek - žanr sa 1 filmom uvek dobija veliku kaznu (z=1.5 -> -1.5) nezavisno od ostatka
-        // profila, dok žanr sa 4+ filmova dobija mnogo manju. `averageRating` u vraćenom objektu
-        // ostaje NEDIRNUTO sirovo (prikaz na profilu i dalje radi sa pravim prosekom - ista logika
-        // sad postoji i na Android strani, ProfileScreen.kt TasteProfileSection, za "Tvoj ukus"
-        // prikaz koji ne prolazi kroz ovu rutu). Deljena `confidenceScore()` funkcija (iznad
-        // klase) - `compareTasteProfiles` (prijatelji/Movie Night) koristi istu formulu, videti
-        // dorada 17. avgust 2026.
-        ratingSumByGenreId.keys
-            .map { genreId ->
-                val count = countByGenreId.getValue(genreId)
-                val average = ratingSumByGenreId.getValue(genreId) / count
-                GenreAffinity(
-                    genreId = genreId,
-                    genreName = nameByGenreId.getValue(genreId),
-                    averageRating = average,
-                    movieCount = count
-                )
-            }
-            .sortedByDescending { affinity -> affinity.confidenceScore() }
+        return userIds.associateWith { buildTasteProfile(ratedRowsByUser[it].orEmpty()) }
     }
+}
+
+private fun buildTasteProfile(ratedRows: List<Pair<Int, List<TmdbGenre>>>): List<GenreAffinity> {
+    // Grupiše se po genreId (ne po imenu - stabilnije, izbegava eventualne duple/lokalizovane
+    // nazive), ime se čuva samo za prikaz.
+    val ratingSumByGenreId = mutableMapOf<Int, Double>()
+    val countByGenreId = mutableMapOf<Int, Int>()
+    val nameByGenreId = mutableMapOf<Int, String>()
+    for ((rating, genres) in ratedRows) {
+        for (genre in genres) {
+            ratingSumByGenreId[genre.id] = (ratingSumByGenreId[genre.id] ?: 0.0) + rating
+            countByGenreId[genre.id] = (countByGenreId[genre.id] ?: 0) + 1
+            nameByGenreId[genre.id] = genre.name
+        }
+    }
+
+    // Bag korigovan (16. avgust 2026, korisnička žalba "predlozi nekad bas brljaju"): ranije se
+    // rangiralo ČISTO po averageRating (pa tek onda po movieCount kao tie-breaker), što znači da
+    // je JEDAN film ocenjen 10/10 u sporednom žanru upadao na vrh profila iznad žanra sa npr. 15
+    // filmova i prosekom 8/10 - taj slučajni/sporedni žanr bi onda dominirao "Predloženo za
+    // tebe".
+    //
+    // Dorada #2 (16. avgust 2026, korisnik pokazao konkretan primer): prvi pokušaj (Bayesian
+    // shrinkage ka korisnikovom globalnom proseku) NIJE bio dovoljan - npr. Fantasy(10.0, 1 film)
+    // je ostajao iznad Action(9.5, 4 filma), jer shrinkage-ka-proseku matematički NE MOŽE da
+    // obrne redosled dva žanra čiji sirovi proseci padaju sa suprotnih strana proseka (žanr iznad
+    // proseka se povlači naniže ali nikad ne padne ispod njega samo zbog malog uzorka). Zamenjeno
+    // sa "kazna po neizvesnosti" (isti duh kao Wilson/lower-confidence-bound rangiranje) -
+    // oduzima se CONFIDENCE_PENALTY_Z / sqrt(movieCount) direktno od ocene, bez oslanjanja na bilo
+    // čiji prosek - žanr sa 1 filmom uvek dobija veliku kaznu (z=1.5 -> -1.5) nezavisno od ostatka
+    // profila, dok žanr sa 4+ filmova dobija mnogo manju. `averageRating` u vraćenom objektu
+    // ostaje NEDIRNUTO sirovo (prikaz na profilu i dalje radi sa pravim prosekom - ista logika
+    // sad postoji i na Android strani, ProfileScreen.kt TasteProfileSection, za "Tvoj ukus"
+    // prikaz koji ne prolazi kroz ovu rutu). Deljena `confidenceScore()` funkcija (iznad
+    // klase) - `compareTasteProfiles` (prijatelji/Movie Night) koristi istu formulu, videti
+    // dorada 17. avgust 2026.
+    return ratingSumByGenreId.keys
+        .map { genreId ->
+            val count = countByGenreId.getValue(genreId)
+            val average = ratingSumByGenreId.getValue(genreId) / count
+            GenreAffinity(
+                genreId = genreId,
+                genreName = nameByGenreId.getValue(genreId),
+                averageRating = average,
+                movieCount = count
+            )
+        }
+        .sortedByDescending { affinity -> affinity.confidenceScore() }
 }

@@ -5,7 +5,10 @@ import com.milinko.db.ScrapedMoviesRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
 
 /**
@@ -18,6 +21,9 @@ import kotlin.math.sqrt
  * listu (ceo indeks se zameni odjednom pri [refresh] - nema potrebe za `synchronized`/zaključavanjem
  * pojedinačnih unosa, jedan pisac - refresh - i mnogo čitalaca - pretrage).
  */
+// Isti limit kao NOW_IN_CINEMAS_TMDB_PARALLELISM u MovieRouting.kt.
+private const val TMDB_PARALLELISM = 8
+
 class CinemaSemanticIndex(
     private val scrapedMoviesRepository: ScrapedMoviesRepository,
     private val tmdbService: TmdbService,
@@ -52,13 +58,17 @@ class CinemaSemanticIndex(
         val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
 
         val cached = movieEmbeddingsRepository.getEmbeddingsForEngine(embedder.key)
-        var reusedCount = 0
+        // Brojač se uvećava iz paralelnih korutina - zato atomičan.
+        val reusedCount = AtomicInteger(0)
+        // Bez ograničenja ~110 istovremenih TMDB poziva pri praznom kešu završava u timeout-ima,
+        // pa deo filmova ispadne iz indeksa.
+        val tmdbLimiter = Semaphore(TMDB_PARALLELISM)
 
         val newEntries = coroutineScope {
             byTmdbId.entries.map { (tmdbId, rows) ->
                 async {
                     try {
-                        val detail = tmdbService.getMovieDetails(tmdbId) ?: return@async null
+                        val detail = tmdbLimiter.withPermit { tmdbService.getMovieDetails(tmdbId) } ?: return@async null
                         val overview = detail.overview?.trim().orEmpty()
                         if (overview.isEmpty()) return@async null
 
@@ -67,7 +77,7 @@ class CinemaSemanticIndex(
                         val cachedEntry = cached[tmdbId]
 
                         val embedding = if (cachedEntry != null && cachedEntry.sourceHash == sourceHash && cachedEntry.embedding.isNotEmpty()) {
-                            reusedCount++
+                            reusedCount.incrementAndGet()
                             cachedEntry.embedding
                         } else {
                             val computed = embedder.embedDocument(sourceText)
@@ -95,7 +105,7 @@ class CinemaSemanticIndex(
         }
 
         entries = newEntries
-        println("[LOG] CinemaSemanticIndex (${embedder.label}) osvežen: ${newEntries.size}/${byTmdbId.size} filmova indeksirano (${reusedCount} iz DB keša, ${newEntries.size - reusedCount} novo izračunato).")
+        println("[LOG] CinemaSemanticIndex (${embedder.label}) osvežen: ${newEntries.size}/${byTmdbId.size} filmova indeksirano (${reusedCount.get()} iz DB keša, ${newEntries.size - reusedCount.get()} novo izračunato).")
     }
 
     /** SHA-256 heks digest teksta od kog je embedding izračunat - videti napomenu na MovieEmbeddingsTable.sourceHash. */

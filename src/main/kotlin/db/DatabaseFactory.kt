@@ -1,5 +1,7 @@
 package com.milinko.db
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
@@ -21,20 +23,33 @@ object DatabaseFactory {
         val isPooler = host.contains("pooler.supabase.com")
         val jdbcUrl = if (isPooler) {
             // Connection pooler (port 6543) - zahteva extra parametri za SNI
-            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&application_name=movielens&options=-c%20search_path%3Dpublic"
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&reWriteBatchedInserts=true&application_name=movielens&options=-c%20search_path%3Dpublic"
         } else {
             // Direct connection (port 5432)
-            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0"
+            "jdbc:postgresql://$host:$port/$dbName?sslmode=require&prepareThreshold=0&reWriteBatchedInserts=true"
         }
 
         println("[DATABASE] Povezujem: $host:$port (${if (isPooler) "Pooler" else "Direct"})")
 
-        Database.connect(
-            url = jdbcUrl,
-            driver = "org.postgresql.Driver",
-            user = user,
-            password = password
-        )
+        // Pool konekcija - bez njega Exposed otvara novu SSL konekciju ka Supabase-u za svaku
+        // transakciju (stotine ms po upitu). Pool je mali jer Supabase pooler ograničava broj
+        // klijentskih konekcija, a jedna instanca servera ne treba više.
+        val dataSource = HikariDataSource(HikariConfig().apply {
+            this.jdbcUrl = jdbcUrl
+            driverClassName = "org.postgresql.Driver"
+            username = user
+            this.password = password
+            poolName = "movienee-db"
+            maximumPoolSize = System.getenv("DB_POOL_SIZE")?.toIntOrNull()?.takeIf { it > 0 } ?: 5
+            minimumIdle = 1
+            connectionTimeout = 10_000
+            // Pooler/Postgres zatvaraju neaktivne konekcije - Hikari ih osvežava pre toga.
+            idleTimeout = 5 * 60_000
+            keepaliveTime = 2 * 60_000
+            maxLifetime = 15 * 60_000
+            validate()
+        })
+        Database.connect(dataSource)
         println("[DATABASE] Uspešno uspostavljena veza sa Supabase PostgreSQL bazom!")
 
         // Šema se generiše direktno iz Exposed tabela — jedan izvor istine u kodu, bez ručnog

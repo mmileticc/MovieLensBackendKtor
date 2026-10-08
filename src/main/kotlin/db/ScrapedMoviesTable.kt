@@ -12,8 +12,8 @@ import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.batchInsert
 import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 import org.jetbrains.exposed.sql.max
 import org.jetbrains.exposed.sql.select
@@ -37,6 +37,11 @@ object ScrapedMoviesTable : Table("scraped_movies") {
     // datuma u Application.kt (configureScrapingLifecycle) pretpostavlja da je ovo UTC.
     val createdAt = datetime("created_at").clientDefault { Clock.System.now().toLocalDateTime(TimeZone.UTC) }
     override val primaryKey = PrimaryKey(id)
+
+    init {
+        // Indeks već postoji u bazi; mapiran ovde da ga Exposed ne prijavljuje kao nepoznat.
+        index("idx_scraped_tmdb_id", false, tmdbId)
+    }
 }
 
 // 2. Klasa koja sadrži logiku za rad sa podacima
@@ -60,18 +65,18 @@ class ScrapedMoviesRepository {
         val obrisanoRedova = ScrapedMoviesTable.deleteWhere { ScrapedMoviesTable.cinemaName inList bioskopiZaZamenu }
         println("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
 
-        moviesList.forEach { movie ->
-            ScrapedMoviesTable.insert { tableRow ->
-                tableRow[title] = movie.title
-                tableRow[originalTitle] = movie.originalTitle
-                tableRow[cinemaName] = movie.cinemaName
-                tableRow[cinemaLocation] = movie.cinemaLocation
-                tableRow[latitude] = movie.latitude
-                tableRow[longitude] = movie.longitude
-                tableRow[bookingUrl] = movie.bookingUrl
-                tableRow[isUpcoming] = movie.isUpcoming
-                tableRow[tmdbId] = movie.tmdbId
-            }
+        // Jedan batch umesto ~500 pojedinačnih INSERT-a (uz reWriteBatchedInserts u JDBC URL-u
+        // drajver ih spaja u višeredne INSERT naredbe).
+        ScrapedMoviesTable.batchInsert(moviesList, shouldReturnGeneratedValues = false) { movie ->
+            this[ScrapedMoviesTable.title] = movie.title
+            this[ScrapedMoviesTable.originalTitle] = movie.originalTitle
+            this[ScrapedMoviesTable.cinemaName] = movie.cinemaName
+            this[ScrapedMoviesTable.cinemaLocation] = movie.cinemaLocation
+            this[ScrapedMoviesTable.latitude] = movie.latitude
+            this[ScrapedMoviesTable.longitude] = movie.longitude
+            this[ScrapedMoviesTable.bookingUrl] = movie.bookingUrl
+            this[ScrapedMoviesTable.isUpcoming] = movie.isUpcoming
+            this[ScrapedMoviesTable.tmdbId] = movie.tmdbId
         }
         println("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
     }
