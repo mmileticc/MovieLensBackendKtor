@@ -61,6 +61,7 @@ private val ENGLISH_MESSAGES = mapOf(
     "Nema zahteva za prihvatanje" to "There is no request to accept",
     "Ne možeš poslati zahtev samom sebi" to "You can't send a friend request to yourself",
     "Predlozi su dostupni samo za prijatelje" to "Suggestions are available only for friends",
+    "Film možeš poslati samo prijatelju" to "You can only send a movie to a friend",
 
     // Komentari
     "Komentar ne može biti prazan" to "Comment can't be empty",

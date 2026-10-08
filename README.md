@@ -239,6 +239,8 @@ MovieLensBackendKtor/
 | `DB_PASSWORD` | Yes | Database password |
 | `DB_SSLMODE` | No (default `require`) | Postgres `sslmode`; `disable` for the local Postgres in `docker-compose.yml` |
 | `DB_POOL_SIZE` | No (default `5`) | HikariCP maximum pool size (keep small - the Supabase pooler limits client connections) |
+| `ANDROID_CERT_SHA256` | No | Comma-separated SHA-256 fingerprints of the APK signing keys (release and debug/beta); served in `/.well-known/assetlinks.json` so `https://<host>/m/{tmdbId}` links open in the app |
+| `APP_DOWNLOAD_URL` | No | Play Store or APK URL shown as a download button on the shared movie page (`/m/{tmdbId}`) |
 | `PUBLIC_BASE_URL` | No | Public server URL (e.g. `https://movielensbackendktor.onrender.com`); turns stored avatar paths into absolute URLs in responses, needed by app versions that can't resolve relative URLs |
 | `SCRAPING_BOOLEAN` | Yes | `"true"` to run the cinema scrapers on this instance; `"false"` to only serve reads and refresh the semantic index from existing data |
 | `OMDB_API_KEY` | No | Enables IMDb/Rotten Tomatoes enrichment; ratings silently omitted if unset |
