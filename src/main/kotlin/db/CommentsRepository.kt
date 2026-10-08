@@ -72,7 +72,7 @@ class CommentsRepository {
      */
     suspend fun getForMovie(
         movieId: Long,
-        requestingUserId: String,
+        requestingUserId: String?,
         friendIds: List<String>,
         offset: Int,
         limit: Int
@@ -96,7 +96,7 @@ class CommentsRepository {
                         likeCount = 0,
                         likedByMe = false,
                         isFriend = row[CommentsTable.userId] in friendSet,
-                        isOwn = row[CommentsTable.userId] == requestingUserId
+                        isOwn = requestingUserId != null && row[CommentsTable.userId] == requestingUserId
                     )
                 }
         }
@@ -115,7 +115,7 @@ class CommentsRepository {
 
         val enriched = page.map { row ->
             val likedBy = likeUserIdsByComment[row.id].orEmpty()
-            row.copy(likeCount = likedBy.size, likedByMe = requestingUserId in likedBy)
+            row.copy(likeCount = likedBy.size, likedByMe = requestingUserId != null && requestingUserId in likedBy)
         }
         val hasMore = sorted.size > offset + page.size
         return CommentsPage(enriched, hasMore)

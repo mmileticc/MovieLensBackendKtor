@@ -9,6 +9,7 @@ import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
+import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.principal
 import io.ktor.server.request.*
@@ -82,22 +83,27 @@ fun Application.configureCommentsRouting(
     userDao: UserDao
 ) {
     routing {
-        authenticate("auth-jwt") {
-            route("/api/movies/{tmdbId}/comments") {
-                get {
-                    val callerId = call.principal<JWTPrincipal>()?.payload?.subject
-                        ?: return@get call.respond(HttpStatusCode.Unauthorized)
+        // Čitanje komentara je javno (gost vidi komentare kao i ostatak detalja filma); sa tokenom
+        // se dodatno označavaju sopstveni komentari, komentari prijatelja i lajkovi.
+        rateLimit(RATE_LIMIT_PUBLIC) {
+            authenticate("auth-jwt", optional = true) {
+                get("/api/movies/{tmdbId}/comments") {
+                    val callerId = call.principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
                     val tmdbId = call.parameters["tmdbId"]?.toLongOrNull()
                         ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
                     val offset = call.request.queryParameters["offset"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
                     val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, MAX_PAGE_SIZE)
                         ?: DEFAULT_PAGE_SIZE
 
-                    val friendIds = friendshipsRepository.getFriendIds(callerId)
+                    val friendIds = callerId?.let { friendshipsRepository.getFriendIds(it) }.orEmpty()
                     val page = commentsRepository.getForMovie(tmdbId, callerId, friendIds, offset, limit)
                     call.respond(CommentsResponseDto(page.rows.map { it.toDto() }, page.hasMore))
                 }
+            }
+        }
 
+        authenticate("auth-jwt") {
+            route("/api/movies/{tmdbId}/comments") {
                 post {
                     val callerId = call.principal<JWTPrincipal>()?.payload?.subject
                         ?: return@post call.respond(HttpStatusCode.Unauthorized)
