@@ -303,7 +303,9 @@ fun Application.configureFriendsRouting(
                                     avatarUrl = friendUser.avatarUrl,
                                     bio = friendUser.bio,
                                     watchedMovies = emptyList(),
-                                    email = friendUser.email,
+                                    // Email vidi samo prihvaćeni prijatelj - inače bi svako ko zna
+                                    // nečiji ID (npr. iz komentara) mogao da dobije njegovu adresu.
+                                    email = null,
                                     friendshipStatus = status.name,
                                     commonGenres = match.commonGenres
                                 )

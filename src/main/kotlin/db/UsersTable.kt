@@ -6,6 +6,8 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
@@ -211,22 +213,23 @@ class UserDao {
     }
 
     /**
-     * Pretraga korisnika za dodavanje prijatelja - delimično podudaranje (case-insensitive) po
-     * username-u ILI email-u, isključuje samog sebe. Koristi se za "search-as-you-type" na
-     * Android strani (isti obrazac kao pretraga filmova).
+     * Pretraga korisnika za dodavanje prijatelja (case-insensitive), isključuje samog sebe.
+     * Username: delimično podudaranje (search-as-you-type). Email: SAMO tačno podudaranje, i samo
+     * kad upit liči na email - delimična pretraga po emailu bi omogućila da se upitom "@gmail"
+     * izlistaju tuđe adrese.
      */
     suspend fun searchUsers(query: String, excludeUserId: String, limit: Int = 20): List<User> = dbQuery {
-        val trimmed = query.trim()
+        val trimmed = query.trim().lowercase()
         if (trimmed.isEmpty()) return@dbQuery emptyList()
 
-        val pattern = "%${trimmed.lowercase()}%"
-        UsersTable.select {
-            (UsersTable.id neq excludeUserId) and
-                (
-                    (UsersTable.username.lowerCase() like pattern) or
-                        (UsersTable.email.lowerCase() like pattern)
-                )
-        }.limit(limit).map { it.toUser() }
+        val matchesQuery = if ('@' in trimmed) {
+            UsersTable.email.lowerCase() eq trimmed
+        } else {
+            UsersTable.username.lowerCase() like "%$trimmed%"
+        }
+        UsersTable.select { (UsersTable.id neq excludeUserId) and matchesQuery }
+            .limit(limit)
+            .map { it.toUser() }
     }
 
     /**

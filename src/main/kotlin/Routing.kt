@@ -17,6 +17,8 @@ import com.milinko.services.TmdbService
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
+import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -90,6 +92,8 @@ fun Application.configureRouting(
 
                 // Issue backend JWT token (24h expiry)
                 val token = JWT.create()
+                    .withIssuer(JWT_ISSUER)
+                    .withAudience(JWT_AUDIENCE)
                     .withSubject(user.id)
                     .withClaim("firebaseUid", uid)
                     .withExpiresAt(Date.from(Instant.now().plusSeconds(86400)))
@@ -110,140 +114,162 @@ fun Application.configureRouting(
             } catch (e: FirebaseAuthException) {
                 println("[AUTH] Firebase verification failed: ${e.message}")
                 call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+            } catch (e: IllegalArgumentException) {
+                // Prazan ili neispravno formiran idToken.
+                println("[AUTH] Invalid token format: ${e.message}")
+                call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+            } catch (e: BadRequestException) {
+                call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neispravan zahtev"))
             } catch (e: Exception) {
+                // Pad baze, Firebase nije inicijalizovan i sl. - nije problem sa tokenom, pa ne
+                // vraćamo 401 (klijent bi pogrešno zaključio da korisnik mora ponovo da se prijavi).
                 println("[AUTH] Unexpected error: ${e.message}")
                 e.printStackTrace()
-                call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
+                call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Prijava trenutno nije moguća, pokušaj ponovo"))
             }
         }
 
         // =================== PROTECTED ENDPOINTS ===================
         authenticate("auth-jwt") {
-            post("/chat/vision") {
-                val multipart = call.receiveMultipart()
-                println("\n[LOG] ${java.time.LocalTime.now()} | IMAGE ONLY")
-                var message: String? = null
-                var imageBytes: ByteArray? = null
-                var imageMime: String = "image/jpeg"
+            rateLimit(RATE_LIMIT_VISION) {
+                post("/chat/vision") {
+                    val multipart = call.receiveMultipart()
+                    println("\n[LOG] ${java.time.LocalTime.now()} | IMAGE ONLY")
+                    var message: String? = null
+                    var imageBytes: ByteArray? = null
+                    var tooLarge = false
 
-                multipart.forEachPart { part ->
-                    when (part) {
-                        is PartData.FormItem -> {
-                            if (part.name == "message") message = part.value
-                        }
-                        is PartData.FileItem -> {
-                            if (part.name == "image") {
-                                imageBytes = part.streamProvider().readBytes()
-                                part.contentType?.let { ct -> imageMime = ct.toString() }
+                    multipart.forEachPart { part ->
+                        when (part) {
+                            is PartData.FormItem -> {
+                                if (part.name == "message") message = part.value
                             }
-                        }
-                        else -> {}
-                    }
-                    part.dispose()
-                }
-
-                if (imageBytes == null) {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Missing file part: image"))
-                }
-
-                val size = imageBytes.size
-                val allowedMimes = setOf("image/jpeg", "image/jpg", "image/png")
-                if (size > 8 * 1024 * 1024) {
-                    return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("Image too large (>8MB)"))
-                }
-                if (imageMime.lowercase() !in allowedMimes) {
-                    return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Unsupported image mime: $imageMime"))
-                }
-
-                val t0 = System.currentTimeMillis()
-                println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime}")
-
-                try {
-
-                    val filmoviIzBaze = try {
-                        repository.getAllScrapedMovies()
-                    } catch (dbEx: Exception) {
-                        println("[ERROR] Neuspešno čitanje iz baze, nastavljam sa praznom listom: ${dbEx.message}")
-                        emptyList<ScrapedMovie>()
-                    }
-
-                    // 1) Detekcija kandidata sa timeoutom preko Gemini-ja
-                    val (detected, tGeminiMs) = try {
-                        val start = System.currentTimeMillis()
-                        val detected = withTimeout(25_000) {
-                            geminiService.detectMoviesFromImage(imageBytes, imageMime)
-                        }
-                        detected to (System.currentTimeMillis() - start)
-                    } catch (e: TimeoutCancellationException) {
-                        return@post call.respond(HttpStatusCode.GatewayTimeout, ErrorResponse("Gemini detection timed out"))
-                    }
-
-                    val candidatesTop3 = detected.candidates.take(3)
-                    println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
-                    println("[LOG] Detected candidates: ${detected.candidates.joinToString { it.title }}")
-                    // 2) TMDB pretrage u paraleli (do 3 kandidata)
-                    val t3 = System.currentTimeMillis()
-                    val resolutions = coroutineScope {
-                        candidatesTop3.map { cand ->
-                            async {
-                                val year = cand.year
-                                val matches = try {
-                                    tmdbService.searchMovies(cand.title)
-                                        .take(5)
-                                        .map { tmdbMovie ->
-                                            // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
-                                            val pronadjeniBioskopi = proveriDostupnostUBioskopimaPoPrioritetu(
-                                                tmdbId = tmdbMovie.id,
-                                                privremenaBazaFilmova = filmoviIzBaze
-                                            )
-                                            TmdbMatch(
-                                                id = tmdbMovie.id,
-                                                title = tmdbMovie.title,
-                                                originalTitle = tmdbMovie.originalTitle,
-                                                releaseDate = tmdbMovie.releaseDate,
-                                                overview = tmdbMovie.overview,
-                                                posterPath = tmdbMovie.posterPath,
-                                                popularity = tmdbMovie.popularity,
-                                                voteAverage = tmdbMovie.voteAverage,
-                                                cinemaShowtimes = pronadjeniBioskopi
-                                            )
-                                        }
-                                } catch (ex: Exception) {
-                                    println("[ERROR] TMDB search failed for '${cand.title}': ${ex.message}")
-                                    emptyList()
+                            is PartData.FileItem -> {
+                                if (part.name == "image") {
+                                    // Čita najviše limit+1 bajt - veći fajl se odbija bez učitavanja celog u memoriju.
+                                    val bytes = part.streamProvider().use { it.readNBytes(MAX_IMAGE_BYTES + 1) }
+                                    if (bytes.size > MAX_IMAGE_BYTES) tooLarge = true else imageBytes = bytes
                                 }
-                                for (match in matches) {
-                                    println("[LOG] TMDB match: ${match.title} (${match.releaseDate})")
-                                }
-                                CandidateResolution(candidate = cand, matches = matches)
                             }
-                        }.awaitAll()
+                            else -> {}
+                        }
+                        part.dispose()
                     }
-                    val tTmdbMs = System.currentTimeMillis() - t3
-                    println("[LOG] TMDB done in ${tTmdbMs}ms")
 
-                    val payload = VisionSearchResponse(
-                        notMovieLike = detected.notMovieLike,
-                        uncertaintyReason = detected.uncertaintyReason,
-                        queryLanguage = detected.queryLanguage,
-                        resolutions = resolutions
-                    )
+                    if (tooLarge) {
+                        return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("Slika je prevelika - probaj sa manjom/kompresovanijom slikom"))
+                    }
+                    if (imageBytes == null) {
+                        return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nedostaje slika"))
+                    }
 
-                    println("[LOG] /chat/vision total=${System.currentTimeMillis() - t0}ms")
-                    call.respond(payload)
+                    val size = imageBytes.size
+                    // Tip se određuje iz sadržaja fajla, ne iz Content-Type zaglavlja koje klijent bira sam.
+                    val imageMime = detectImageMime(imageBytes)
+                        ?: return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Nepodržan format slike - koristi JPEG ili PNG"))
 
-                } catch (e: GeminiOverloadedException) {
+                    val t0 = System.currentTimeMillis()
+                    println("\n[LOG] ${java.time.LocalTime.now()} | VISION: size=${size} mime=${imageMime}")
+
+                    try {
+
+                        val filmoviIzBaze = try {
+                            repository.getAllScrapedMovies()
+                        } catch (dbEx: Exception) {
+                            println("[ERROR] Neuspešno čitanje iz baze, nastavljam sa praznom listom: ${dbEx.message}")
+                            emptyList<ScrapedMovie>()
+                        }
+
+                        // 1) Detekcija kandidata sa timeoutom preko Gemini-ja
+                        val (detected, tGeminiMs) = try {
+                            val start = System.currentTimeMillis()
+                            val detected = withTimeout(25_000) {
+                                geminiService.detectMoviesFromImage(imageBytes, imageMime)
+                            }
+                            detected to (System.currentTimeMillis() - start)
+                        } catch (e: TimeoutCancellationException) {
+                            return@post call.respond(HttpStatusCode.GatewayTimeout, ErrorResponse("Gemini detection timed out"))
+                        }
+
+                        val candidatesTop3 = detected.candidates.take(3)
+                        println("[LOG] Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
+                        println("[LOG] Detected candidates: ${detected.candidates.joinToString { it.title }}")
+                        // 2) TMDB pretrage u paraleli (do 3 kandidata)
+                        val t3 = System.currentTimeMillis()
+                        val resolutions = coroutineScope {
+                            candidatesTop3.map { cand ->
+                                async {
+                                    val year = cand.year
+                                    val matches = try {
+                                        tmdbService.searchMovies(cand.title)
+                                            .take(5)
+                                            .map { tmdbMovie ->
+                                                // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
+                                                val pronadjeniBioskopi = proveriDostupnostUBioskopimaPoPrioritetu(
+                                                    tmdbId = tmdbMovie.id,
+                                                    privremenaBazaFilmova = filmoviIzBaze
+                                                )
+                                                TmdbMatch(
+                                                    id = tmdbMovie.id,
+                                                    title = tmdbMovie.title,
+                                                    originalTitle = tmdbMovie.originalTitle,
+                                                    releaseDate = tmdbMovie.releaseDate,
+                                                    overview = tmdbMovie.overview,
+                                                    posterPath = tmdbMovie.posterPath,
+                                                    popularity = tmdbMovie.popularity,
+                                                    voteAverage = tmdbMovie.voteAverage,
+                                                    cinemaShowtimes = pronadjeniBioskopi
+                                                )
+                                            }
+                                    } catch (ex: Exception) {
+                                        println("[ERROR] TMDB search failed for '${cand.title}': ${ex.message}")
+                                        emptyList()
+                                    }
+                                    for (match in matches) {
+                                        println("[LOG] TMDB match: ${match.title} (${match.releaseDate})")
+                                    }
+                                    CandidateResolution(candidate = cand, matches = matches)
+                                }
+                            }.awaitAll()
+                        }
+                        val tTmdbMs = System.currentTimeMillis() - t3
+                        println("[LOG] TMDB done in ${tTmdbMs}ms")
+
+                        val payload = VisionSearchResponse(
+                            notMovieLike = detected.notMovieLike,
+                            uncertaintyReason = detected.uncertaintyReason,
+                            queryLanguage = detected.queryLanguage,
+                            resolutions = resolutions
+                        )
+
+                        println("[LOG] /chat/vision total=${System.currentTimeMillis() - t0}ms")
+                        call.respond(payload)
+
+                    } catch (e: GeminiOverloadedException) {
                     
-                    println("[ERROR] Gemini overloaded: ${e.message}")
-                    call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
-                } catch (e: IllegalStateException) {
-                    call.respondUpstreamError("Upstream failure", e, "Analiza slike trenutno nije uspela")
-                } catch (e: Throwable) {
-                    println("[ERROR] Unexpected: ${e.message}")
-                    call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Internal server error"))
+                        println("[ERROR] Gemini overloaded: ${e.message}")
+                        call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
+                    } catch (e: IllegalStateException) {
+                        call.respondUpstreamError("Upstream failure", e, "Analiza slike trenutno nije uspela")
+                    } catch (e: Throwable) {
+                        println("[ERROR] Unexpected: ${e.message}")
+                        call.respond(HttpStatusCode.InternalServerError, ErrorResponse("Došlo je do greške na serveru"))
+                    }
                 }
             }
         }
+    }
+}
+
+private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/** JPEG ili PNG po potpisu (magic bytes) na početku fajla; null za sve ostalo. */
+internal fun detectImageMime(bytes: ByteArray): String? {
+    fun startsWith(vararg sig: Int) = bytes.size >= sig.size && sig.indices.all { bytes[it] == sig[it].toByte() }
+    return when {
+        startsWith(0xFF, 0xD8, 0xFF) -> "image/jpeg"
+        startsWith(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) -> "image/png"
+        else -> null
     }
 }
 

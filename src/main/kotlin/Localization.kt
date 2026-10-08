@@ -39,6 +39,10 @@ private val ENGLISH_MESSAGES = mapOf(
     "Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka." to
         "The recognition service is busy right now. Please try again in a moment.",
     "Slika je prevelika - probaj sa manjom/kompresovanijom slikom" to "The image is too large - try a smaller one",
+    "Nedostaje slika" to "Missing image",
+    "Nepodržan format slike - koristi JPEG ili PNG" to "Unsupported image format - use JPEG or PNG",
+    "Previše zahteva. Pokušaj ponovo za minut." to "Too many requests. Please try again in a minute.",
+    "Prijava trenutno nije moguća, pokušaj ponovo" to "Sign-in is currently unavailable, please try again",
 
     // Filmovi / glumci
     "Film nije pronađen" to "Movie not found",

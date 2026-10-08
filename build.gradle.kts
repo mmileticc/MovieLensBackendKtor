@@ -44,6 +44,7 @@ dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm")
     implementation("io.ktor:ktor-server-status-pages-jvm")
     implementation("io.ktor:ktor-server-cors-jvm")
+    implementation("io.ktor:ktor-server-rate-limit-jvm")
     // OVO JE TAČNA BIBLIOTEKA ZA JAVA SDK
 
     val jacksonVersion = "2.17.2"

@@ -16,6 +16,7 @@ import io.ktor.server.application.*
 import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.principal
+import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.async
@@ -258,260 +259,264 @@ fun Application.configureMovieRouting(
     val nowInCinemasCache = TtlCache<String, NowInCinemasResponseDto>(ttlMillis = NOW_IN_CINEMAS_CACHE_TTL_MS, maxSize = 4)
 
     routing {
-        route("/api/movies") {
-            get("/search") {
-                val query = call.request.queryParameters["query"]?.trim().orEmpty()
-                if (query.isEmpty()) {
-                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Query parametar je obavezan"))
-                }
-                try {
-                    val results = tmdbService.searchMovies(query)
-                    call.respond(MovieListResponseDto(results.map { it.toDto() }))
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/search", e, "TMDB pretraga nije uspela")
-                }
-            }
-
-            get("/trending") {
-                val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
-                try {
-                    val results = tmdbService.getPopularMovies(page)
-                    call.respond(MovieListResponseDto(results.map { it.toDto() }))
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/trending", e, "TMDB trending nije uspeo")
-                }
-            }
-
-            // Personalizacija ISKLJUČIVO za korisnika iz JWT-a (opciona autentikacija: bez tokena ruta
-            // radi i za neulogovane i vraća popularne filmove). Ranije je userId stizao kao javni query
-            // parametar - svako ko zna nečiji ID mogao je da dobije njegove predloge (iz kojih su
-            // izbačeni već gledani filmovi, tj. delimično otkrivaju istoriju gledanja). Query parametar
-            // `userId` koji stari/postojeći Android klijent i dalje šalje se ignoriše - AuthInterceptor
-            // ionako dodaje Bearer token uz svaki zahtev ulogovanog korisnika.
-            authenticate("auth-jwt", optional = true) {
-                get("/featured") {
-                    val userId = call.principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
-                    val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+        rateLimit(RATE_LIMIT_PUBLIC) {
+            route("/api/movies") {
+                get("/search") {
+                    val query = call.request.queryParameters["query"]?.trim().orEmpty()
+                    if (query.isEmpty()) {
+                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Query parametar je obavezan"))
+                    }
                     try {
-                        val personalized = userId?.let { uid ->
-                            val history = userActionsRepository.getHistory(uid)
-                            val totalRated = history.count { it.rating != null }
-                            if (totalRated < MIN_RATINGS_FOR_PERSONALIZATION) {
-                                null
-                            } else {
-                                val topGenres = tasteProfileRepository.getTasteProfile(uid).take(3)
-                                if (topGenres.isEmpty()) {
-                                    null
-                                } else {
-
-                                    val alreadyWatched = history.map { it.tmdbId }.toSet()
-                                    fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
-                                        .takeIf { it.isNotEmpty() }
-                                }
-                            }
-                        }
-                        val results = personalized ?: tmdbService.getPopularMovies(page)
+                        val results = tmdbService.searchMovies(query)
                         call.respond(MovieListResponseDto(results.map { it.toDto() }))
                     } catch (e: Exception) {
-                        call.respondUpstreamError("/api/movies/featured", e, "TMDB featured nije uspeo")
+                        call.respondUpstreamError("/api/movies/search", e, "TMDB pretraga nije uspela")
                     }
                 }
-            }
 
-            get("/genres") {
-                try {
-                    val genres = tmdbService.getGenres()
-                    call.respond(GenreListResponseDto(genres.map { GenreDto(it.id, it.name) }))
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/genres", e, "TMDB žanrovi nisu dostupni")
+                get("/trending") {
+                    val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+                    try {
+                        val results = tmdbService.getPopularMovies(page)
+                        call.respond(MovieListResponseDto(results.map { it.toDto() }))
+                    } catch (e: Exception) {
+                        call.respondUpstreamError("/api/movies/trending", e, "TMDB trending nije uspeo")
+                    }
                 }
-            }
 
-            // Ceo repertoar (ranije samo prvih 20 - Home traka sad sama uzima 20, a "U bioskopima"
-            // ekran prikazuje sve). TMDB detalji su keširani 1h, ali pri praznom kešu ovo je po jedan
-            // poziv po filmu - Semaphore ograničava paralelizam zbog TMDB rate limita.
-            get("/now-in-cinemas") {
-                try {
-                    val cacheKey = scrapedMoviesRepository.getLatestScrapeTimestamp()?.toString() ?: "empty"
-                    nowInCinemasCache.get(cacheKey)?.let { return@get call.respond(it) }
-
-                    val scraped = scrapedMoviesRepository.getAllScrapedMovies()
-
-                    val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
-                    val tmdbLimiter = Semaphore(NOW_IN_CINEMAS_TMDB_PARALLELISM)
-
-                    val results = coroutineScope {
-                        byTmdbId.entries.map { (tmdbId, rows) ->
-                            async {
-                                val detail = try {
-                                    tmdbLimiter.withPermit { tmdbService.getMovieDetails(tmdbId) }
-                                } catch (e: Exception) {
+                // Personalizacija ISKLJUČIVO za korisnika iz JWT-a (opciona autentikacija: bez tokena ruta
+                // radi i za neulogovane i vraća popularne filmove). Ranije je userId stizao kao javni query
+                // parametar - svako ko zna nečiji ID mogao je da dobije njegove predloge (iz kojih su
+                // izbačeni već gledani filmovi, tj. delimično otkrivaju istoriju gledanja). Query parametar
+                // `userId` koji stari/postojeći Android klijent i dalje šalje se ignoriše - AuthInterceptor
+                // ionako dodaje Bearer token uz svaki zahtev ulogovanog korisnika.
+                authenticate("auth-jwt", optional = true) {
+                    get("/featured") {
+                        val userId = call.principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
+                        val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+                        try {
+                            val personalized = userId?.let { uid ->
+                                val history = userActionsRepository.getHistory(uid)
+                                val totalRated = history.count { it.rating != null }
+                                if (totalRated < MIN_RATINGS_FOR_PERSONALIZATION) {
                                     null
-                                } ?: return@async null
-                                NowInCinemasMovieDto(
-                                    id = detail.id,
-                                    title = detail.title,
-                                    posterPath = detail.posterPath,
-                                    voteAverage = detail.voteAverage ?: 0.0,
-                                    cinemas = rows.map { it.cinemaName }.distinct().sorted(),
-                                    genres = detail.genres.map { GenreDto(it.id, it.name) },
-                                    releaseDate = detail.releaseDate,
-                                    overview = detail.overview,
-                                    runtime = detail.runtime,
-                                    isUpcoming = rows.all { it.isUpcoming }
-                                )
-                            }
-                        }.awaitAll().filterNotNull()
-                    }.sortedWith(
-                        // Prvo ono što sada igra, pa po broju bioskopa (šire prikazivano = relevantnije).
-                        compareBy<NowInCinemasMovieDto> { it.isUpcoming }
-                            .thenByDescending { it.cinemas.size }
-                    )
-                    val response = NowInCinemasResponseDto(results)
-                    // Ne keširamo odgovor kojem fali većina filmova (npr. TMDB je pao usred zahteva) -
-                    // sledeći zahtev treba da pokuša ponovo, a ne da 30 minuta vraća krnju listu.
-                    if (results.size >= byTmdbId.size / 2) nowInCinemasCache.put(cacheKey, response)
-                    call.respond(response)
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/now-in-cinemas", e, "Repertoar trenutno nije dostupan")
-                }
-            }
+                                } else {
+                                    val topGenres = tasteProfileRepository.getTasteProfile(uid).take(3)
+                                    if (topGenres.isEmpty()) {
+                                        null
+                                    } else {
 
-
-            get("/now-in-cinemas/semantic-search") {
-                val query = call.request.queryParameters["q"]?.trim().orEmpty()
-                if (query.isEmpty()) {
-                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Query parametar 'q' je obavezan"))
-                }
-                val engine = call.request.queryParameters["engine"]?.trim()?.lowercase().orEmpty()
-                val index = if (engine == "local") localCinemaSemanticIndex else geminiCinemaSemanticIndex
-                if (!index.isReady()) {
-                    return@get call.respond(NowInCinemasResponseDto(emptyList()))
-                }
-                try {
-                    val matches = index.searchByQuery(query)
-                    call.respond(
-                        NowInCinemasResponseDto(
-                            matches.map { entry ->
-                                NowInCinemasMovieDto(
-                                    id = entry.tmdbId,
-                                    title = entry.title,
-                                    posterPath = entry.posterPath,
-                                    voteAverage = entry.voteAverage,
-                                    cinemas = entry.cinemas
-                                )
+                                        val alreadyWatched = history.map { it.tmdbId }.toSet()
+                                        fetchBlendedByGenreAffinity(tmdbService, topGenres, page, alreadyWatched)
+                                            .takeIf { it.isNotEmpty() }
+                                    }
+                                }
                             }
+                            val results = personalized ?: tmdbService.getPopularMovies(page)
+                            call.respond(MovieListResponseDto(results.map { it.toDto() }))
+                        } catch (e: Exception) {
+                            call.respondUpstreamError("/api/movies/featured", e, "TMDB featured nije uspeo")
+                        }
+                    }
+                }
+
+                get("/genres") {
+                    try {
+                        val genres = tmdbService.getGenres()
+                        call.respond(GenreListResponseDto(genres.map { GenreDto(it.id, it.name) }))
+                    } catch (e: Exception) {
+                        call.respondUpstreamError("/api/movies/genres", e, "TMDB žanrovi nisu dostupni")
+                    }
+                }
+
+                // Ceo repertoar (ranije samo prvih 20 - Home traka sad sama uzima 20, a "U bioskopima"
+                // ekran prikazuje sve). TMDB detalji su keširani 1h, ali pri praznom kešu ovo je po jedan
+                // poziv po filmu - Semaphore ograničava paralelizam zbog TMDB rate limita.
+                get("/now-in-cinemas") {
+                    try {
+                        val cacheKey = scrapedMoviesRepository.getLatestScrapeTimestamp()?.toString() ?: "empty"
+                        nowInCinemasCache.get(cacheKey)?.let { return@get call.respond(it) }
+
+                        val scraped = scrapedMoviesRepository.getAllScrapedMovies()
+
+                        val byTmdbId = scraped.filter { it.tmdbId != null }.groupBy { it.tmdbId!! }
+                        val tmdbLimiter = Semaphore(NOW_IN_CINEMAS_TMDB_PARALLELISM)
+
+                        val results = coroutineScope {
+                            byTmdbId.entries.map { (tmdbId, rows) ->
+                                async {
+                                    val detail = try {
+                                        tmdbLimiter.withPermit { tmdbService.getMovieDetails(tmdbId) }
+                                    } catch (e: Exception) {
+                                        null
+                                    } ?: return@async null
+                                    NowInCinemasMovieDto(
+                                        id = detail.id,
+                                        title = detail.title,
+                                        posterPath = detail.posterPath,
+                                        voteAverage = detail.voteAverage ?: 0.0,
+                                        cinemas = rows.map { it.cinemaName }.distinct().sorted(),
+                                        genres = detail.genres.map { GenreDto(it.id, it.name) },
+                                        releaseDate = detail.releaseDate,
+                                        overview = detail.overview,
+                                        runtime = detail.runtime,
+                                        isUpcoming = rows.all { it.isUpcoming }
+                                    )
+                                }
+                            }.awaitAll().filterNotNull()
+                        }.sortedWith(
+                            // Prvo ono što sada igra, pa po broju bioskopa (šire prikazivano = relevantnije).
+                            compareBy<NowInCinemasMovieDto> { it.isUpcoming }
+                                .thenByDescending { it.cinemas.size }
                         )
-                    )
-                } catch (e: GeminiOverloadedException) {
-
-                    println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
-                    call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/now-in-cinemas/semantic-search", e, "Semantička pretraga nije uspela")
+                        val response = NowInCinemasResponseDto(results)
+                        // Ne keširamo odgovor kojem fali većina filmova (npr. TMDB je pao usred zahteva) -
+                        // sledeći zahtev treba da pokuša ponovo, a ne da 30 minuta vraća krnju listu.
+                        if (results.size >= byTmdbId.size / 2) nowInCinemasCache.put(cacheKey, response)
+                        call.respond(response)
+                    } catch (e: Exception) {
+                        call.respondUpstreamError("/api/movies/now-in-cinemas", e, "Repertoar trenutno nije dostupan")
+                    }
                 }
-            }
 
-            get("/{tmdbId}") {
-                val tmdbId = call.parameters["tmdbId"]?.toIntOrNull()
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
 
-                val lat = call.request.queryParameters["lat"]?.toDoubleOrNull()
-                val lon = call.request.queryParameters["lon"]?.toDoubleOrNull()
-                try {
-                    val detail = tmdbService.getMovieDetails(tmdbId)
-                        ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije pronađen"))
+                rateLimit(RATE_LIMIT_SEMANTIC) {
+                    get("/now-in-cinemas/semantic-search") {
+                        val query = call.request.queryParameters["q"]?.trim().orEmpty()
+                        if (query.isEmpty()) {
+                            return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Query parametar 'q' je obavezan"))
+                        }
+                        val engine = call.request.queryParameters["engine"]?.trim()?.lowercase().orEmpty()
+                        val index = if (engine == "local") localCinemaSemanticIndex else geminiCinemaSemanticIndex
+                        if (!index.isReady()) {
+                            return@get call.respond(NowInCinemasResponseDto(emptyList()))
+                        }
+                        try {
+                            val matches = index.searchByQuery(query)
+                            call.respond(
+                                NowInCinemasResponseDto(
+                                    matches.map { entry ->
+                                        NowInCinemasMovieDto(
+                                            id = entry.tmdbId,
+                                            title = entry.title,
+                                            posterPath = entry.posterPath,
+                                            voteAverage = entry.voteAverage,
+                                            cinemas = entry.cinemas
+                                        )
+                                    }
+                                )
+                            )
+                        } catch (e: GeminiOverloadedException) {
 
-                    val showtimeRows = scrapedMoviesRepository.getShowtimesForMovie(tmdbId)
-                    var showtimes = showtimeRows.map { row ->
-                        val distanceKm = if (lat != null && lon != null && row.latitude != null && row.longitude != null) {
-                            haversineKm(lat, lon, row.latitude, row.longitude)
-                        } else {
+                            println("[ERROR] Gemini overloaded (semantic-search): ${e.message}")
+                            call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Gemini je trenutno preopterećen. Pokušaj ponovo za par trenutaka."))
+                        } catch (e: Exception) {
+                            call.respondUpstreamError("/api/movies/now-in-cinemas/semantic-search", e, "Semantička pretraga nije uspela")
+                        }
+                    }
+                }
+
+                get("/{tmdbId}") {
+                    val tmdbId = call.parameters["tmdbId"]?.toIntOrNull()
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
+
+                    val lat = call.request.queryParameters["lat"]?.toDoubleOrNull()
+                    val lon = call.request.queryParameters["lon"]?.toDoubleOrNull()
+                    try {
+                        val detail = tmdbService.getMovieDetails(tmdbId)
+                            ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije pronađen"))
+
+                        val showtimeRows = scrapedMoviesRepository.getShowtimesForMovie(tmdbId)
+                        var showtimes = showtimeRows.map { row ->
+                            val distanceKm = if (lat != null && lon != null && row.latitude != null && row.longitude != null) {
+                                haversineKm(lat, lon, row.latitude, row.longitude)
+                            } else {
+                                null
+                            }
+                            CinemaShowtimeDto(
+                                cinemaName = row.cinemaName,
+                                cinemaLocation = row.cinemaLocation,
+                                bookingUrl = row.bookingUrl,
+                                latitude = row.latitude,
+                                longitude = row.longitude,
+                                distanceKm = distanceKm,
+                                isUpcoming = row.isUpcoming
+                            )
+                        }
+                        if (lat != null && lon != null) {
+                            showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
+                        }
+
+                        // Dopunske ocene (IMDb/Rotten Tomatoes) - odvojen poziv od TMDB detalja, ne
+                        // sme oboriti ostatak odgovora ako OMDb padne (videti OmdbService.getRatings).
+                        val omdbRatings = try {
+                            omdbService.getRatings(detail.imdbId)
+                        } catch (e: Exception) {
+                            println("[WARN] OMDb obogaćivanje nije uspelo za tmdbId=$tmdbId: ${e.message}")
                             null
                         }
-                        CinemaShowtimeDto(
-                            cinemaName = row.cinemaName,
-                            cinemaLocation = row.cinemaLocation,
-                            bookingUrl = row.bookingUrl,
-                            latitude = row.latitude,
-                            longitude = row.longitude,
-                            distanceKm = distanceKm,
-                            isUpcoming = row.isUpcoming
-                        )
-                    }
-                    if (lat != null && lon != null) {
-                        showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
-                    }
 
-                    // Dopunske ocene (IMDb/Rotten Tomatoes) - odvojen poziv od TMDB detalja, ne
-                    // sme oboriti ostatak odgovora ako OMDb padne (videti OmdbService.getRatings).
-                    val omdbRatings = try {
-                        omdbService.getRatings(detail.imdbId)
+                        call.respond(
+                            MovieDetailDto(
+                                id = detail.id,
+                                title = detail.title,
+                                releaseDate = detail.releaseDate,
+                                posterPath = detail.posterPath,
+                                backdropPath = detail.backdropPath,
+                                overview = detail.overview,
+                                voteAverage = detail.voteAverage ?: 0.0,
+                                runtime = detail.runtime ?: 0,
+                                genres = detail.genres.map { GenreDto(it.id, it.name) },
+                                cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) },
+                                showtimes = showtimes,
+                                imdbRating = omdbRatings?.imdbRating,
+                                rottenTomatoes = omdbRatings?.rottenTomatoesPercent,
+                                imdbId = detail.imdbId,
+                                videos = detail.videos.map { MovieVideoDto(it.key, it.name, it.type) },
+                                backdrops = detail.backdrops
+                            )
+                        )
                     } catch (e: Exception) {
-                        println("[WARN] OMDb obogaćivanje nije uspelo za tmdbId=$tmdbId: ${e.message}")
-                        null
+                        call.respondUpstreamError("/api/movies/$tmdbId", e, "TMDB detalji nisu uspeli")
                     }
-
-                    call.respond(
-                        MovieDetailDto(
-                            id = detail.id,
-                            title = detail.title,
-                            releaseDate = detail.releaseDate,
-                            posterPath = detail.posterPath,
-                            backdropPath = detail.backdropPath,
-                            overview = detail.overview,
-                            voteAverage = detail.voteAverage ?: 0.0,
-                            runtime = detail.runtime ?: 0,
-                            genres = detail.genres.map { GenreDto(it.id, it.name) },
-                            cast = detail.cast.map { CastMemberDto(it.id, it.name, it.character, it.profilePath) },
-                            showtimes = showtimes,
-                            imdbRating = omdbRatings?.imdbRating,
-                            rottenTomatoes = omdbRatings?.rottenTomatoesPercent,
-                            imdbId = detail.imdbId,
-                            videos = detail.videos.map { MovieVideoDto(it.key, it.name, it.type) },
-                            backdrops = detail.backdrops
-                        )
-                    )
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/movies/$tmdbId", e, "TMDB detalji nisu uspeli")
                 }
             }
-        }
 
-        // E2.3 (2. septembar 2026) - stranica glumca. Javna ruta, isti obrazac kao
-        // /api/movies/{tmdbId} iznad (bez authenticate - pregled glumca ne zahteva prijavu).
-        route("/api/people") {
-            get("/{id}") {
-                val personId = call.parameters["id"]?.toIntOrNull()
-                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan id"))
-                try {
-                    val person = tmdbService.getPersonDetails(personId)
-                        ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Glumac nije pronađen"))
+            // E2.3 (2. septembar 2026) - stranica glumca. Javna ruta, isti obrazac kao
+            // /api/movies/{tmdbId} iznad (bez authenticate - pregled glumca ne zahteva prijavu).
+            route("/api/people") {
+                get("/{id}") {
+                    val personId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan id"))
+                    try {
+                        val person = tmdbService.getPersonDetails(personId)
+                            ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Glumac nije pronađen"))
 
-                    call.respond(
-                        PersonDetailDto(
-                            id = person.id,
-                            name = person.name,
-                            biography = person.biography,
-                            birthday = person.birthday,
-                            deathday = person.deathday,
-                            placeOfBirth = person.placeOfBirth,
-                            profilePath = person.profilePath,
-                            knownForDepartment = person.knownForDepartment,
-                            movieCredits = person.movieCredits.map {
-                                PersonMovieCreditDto(
-                                    id = it.tmdbId,
-                                    title = it.title,
-                                    character = it.character,
-                                    posterPath = it.posterPath,
-                                    releaseDate = it.releaseDate,
-                                    voteAverage = it.voteAverage
-                                )
-                            }
+                        call.respond(
+                            PersonDetailDto(
+                                id = person.id,
+                                name = person.name,
+                                biography = person.biography,
+                                birthday = person.birthday,
+                                deathday = person.deathday,
+                                placeOfBirth = person.placeOfBirth,
+                                profilePath = person.profilePath,
+                                knownForDepartment = person.knownForDepartment,
+                                movieCredits = person.movieCredits.map {
+                                    PersonMovieCreditDto(
+                                        id = it.tmdbId,
+                                        title = it.title,
+                                        character = it.character,
+                                        posterPath = it.posterPath,
+                                        releaseDate = it.releaseDate,
+                                        voteAverage = it.voteAverage
+                                    )
+                                }
+                            )
                         )
-                    )
-                } catch (e: Exception) {
-                    call.respondUpstreamError("/api/people/$personId", e, "TMDB podaci o glumcu nisu uspeli")
+                    } catch (e: Exception) {
+                        call.respondUpstreamError("/api/people/$personId", e, "TMDB podaci o glumcu nisu uspeli")
+                    }
                 }
             }
         }

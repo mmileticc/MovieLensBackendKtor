@@ -93,6 +93,10 @@ fun Application.module() {
                 }
             }
         }
+        // RateLimit plugin vraća 429 bez tela - klijent dobija poruku kao i za ostale greške.
+        status(HttpStatusCode.TooManyRequests) { call, status ->
+            call.respond(status, ErrorResponse(error = "Previše zahteva. Pokušaj ponovo za minut."))
+        }
     }
 
     install(CORS) {
@@ -141,7 +145,14 @@ fun Application.module() {
             validate { credential ->
                 try {
                     val userId = credential.payload.subject
-                    if (userId != null && userId.isNotEmpty()) {
+                    // Prelazni period: tokeni izdati pre uvođenja issuer/audience claim-ova još
+                    // važe do 24h, pa se claim proverava samo ako postoji. Kad svi stari tokeni
+                    // isteknu, prebaciti na withIssuer/withAudience u verifier-u iznad.
+                    val issuer = credential.payload.issuer
+                    val audience = credential.payload.audience
+                    val issuerOk = issuer == null || issuer == JWT_ISSUER
+                    val audienceOk = audience.isNullOrEmpty() || JWT_AUDIENCE in audience
+                    if (userId != null && userId.isNotEmpty() && issuerOk && audienceOk) {
                         JWTPrincipal(credential.payload)
                     } else {
                         null
@@ -152,6 +163,8 @@ fun Application.module() {
             }
         }
     }
+
+    configureRateLimiting()
 
     DatabaseFactory.init()
 
@@ -194,6 +207,9 @@ fun Application.module() {
     configureFriendsRouting(FriendshipsRepository(), userDao, UserActionsRepository(), TasteProfileRepository(), tmdbService)
     configureCommentsRouting(tmdbService, CommentsRepository(), MoviesRepository(), FriendshipsRepository(), userDao)
 }
+
+const val JWT_ISSUER = "movienee-backend"
+const val JWT_AUDIENCE = "movienee-android"
 
 @kotlinx.serialization.Serializable
 data class ErrorResponse(val error: String)
