@@ -7,6 +7,7 @@ import scraping.ScrapingEngine
 
 import java.time.LocalDate
 
+/** Manual test of a few scrapers with the old sequential engine; prints the results. */
 @Deprecated("Zamenjeno sa MainConcurrent.kt / ScrapingEngineConcurrent. Ne koristi se u produkciji.")
 fun main() {
     System.setOut(java.io.PrintStream(System.out, true, "UTF-8"))

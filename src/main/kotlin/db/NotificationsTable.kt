@@ -15,9 +15,15 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.update
 
 /**
- * Obaveštenja za korisnika - istorija svega što je poslato kao push (i in-app inbox). `type` je
- * ime [com.milinko.services.PushType], `payload` je JSON sa podacima za klijenta, a `dedupeKey`
- * sprečava da se isto obaveštenje pošalje dvaput (npr. "film sa liste je u bioskopu").
+ * Notification history: everything sent to a user as a push notification, also shown in the
+ * app's Notifications screen.
+ *
+ * - `type` is a [com.milinko.services.PushType] name.
+ * - `payload` is the JSON data sent with the push (actor, movie, note...), so the app can rebuild
+ *   the text in its own language.
+ * - `dedupeKey` prevents sending the same notification twice (e.g. "movie from your watchlist is
+ *   now in cinemas").
+ * - `content` is a readable Serbian fallback text (the column is NOT NULL in the existing schema).
  */
 object NotificationsTable : Table("notifications") {
     val id = integer("id").autoIncrement()
@@ -33,6 +39,7 @@ object NotificationsTable : Table("notifications") {
     override val primaryKey = PrimaryKey(id, name = "notifications_pkey")
 }
 
+/** One notification as stored in [NotificationsTable]. */
 data class NotificationRow(
     val id: Int,
     val type: String?,
@@ -42,8 +49,10 @@ data class NotificationRow(
     val createdAt: LocalDateTime?
 )
 
+/** Reads and writes [NotificationsTable]. */
 class NotificationsRepository {
 
+    /** Stores a new (unread) notification. */
     suspend fun add(userId: String, type: String, content: String, payload: String?, dedupeKey: String? = null): Unit = dbQuery {
         NotificationsTable.insert {
             it[NotificationsTable.userId] = userId
@@ -54,6 +63,7 @@ class NotificationsRepository {
         }
     }
 
+    /** True if a notification with this [dedupeKey] was already stored for the user. */
     suspend fun exists(userId: String, dedupeKey: String): Boolean = dbQuery {
         NotificationsTable.selectAll()
             .where { (NotificationsTable.userId eq userId) and (NotificationsTable.dedupeKey eq dedupeKey) }
@@ -61,6 +71,7 @@ class NotificationsRepository {
             .any()
     }
 
+    /** The user's most recent notifications, newest first. */
     suspend fun latest(userId: String, limit: Int = 50): List<NotificationRow> = dbQuery {
         NotificationsTable.selectAll()
             .where { NotificationsTable.userId eq userId }
@@ -78,6 +89,7 @@ class NotificationsRepository {
             }
     }
 
+    /** Marks all of the user's notifications as read. */
     suspend fun markAllRead(userId: String): Unit = dbQuery {
         NotificationsTable.update({ (NotificationsTable.userId eq userId) and (NotificationsTable.isRead eq false) }) {
             it[isRead] = true

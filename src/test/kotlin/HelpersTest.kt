@@ -46,7 +46,7 @@ class HelpersTest {
         val cache = TtlCache<String, Int>(ttlMillis = 60_000, maxSize = 2)
         cache.put("a", 1)
         cache.put("b", 2)
-        cache.get("a") // "a" je sada skorije korišćen od "b"
+        cache.get("a") // "a" is now more recently used than "b"
         cache.put("c", 3)
 
         assertEquals(1, cache.get("a"))

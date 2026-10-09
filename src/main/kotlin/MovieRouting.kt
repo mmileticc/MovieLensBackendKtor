@@ -30,14 +30,8 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("MovieRouting")
 
-/**
- * Javne rute za pretragu/detalje/trending filmova (Faza 1 iz MOVIELENS_ROADMAP.md).
- * Namerno BEZ authenticate("auth-jwt") — Android app dozvoljava pregled filmova bez prijave,
- * prijava je potrebna samo za skeniranje slike i lične akcije (watchlist/ocene, Faza 2+).
- *
- * DTO-ovi ispod su namerno oblikovani (nazivi JSON polja preko @SerialName) da tačno prate
- * ono što Android MovieModels.kt (Gson @SerializedName) već očekuje — kod na klijentu se ne dira.
- */
+// DTO field names (@SerialName) match what the Android app expects (Gson @SerializedName in
+// MovieModels.kt).
 
 @Serializable
 data class MovieSearchResultDto(
@@ -59,7 +53,7 @@ data class GenreDto(val id: Int, val name: String)
 @Serializable
 data class GenreListResponseDto(val genres: List<GenreDto>)
 
-// YouTube trejler/teaser - `key` je YouTube video ID (Android ga pušta u ugrađenom plejeru).
+/** A YouTube trailer or teaser; `key` is the YouTube video id (played in the app's built-in player). */
 @Serializable
 data class MovieVideoDto(val key: String, val name: String, val type: String)
 
@@ -95,17 +89,17 @@ data class MovieDetailDto(
     val genres: List<GenreDto> = emptyList(),
     val cast: List<CastMemberDto> = emptyList(),
     val showtimes: List<CinemaShowtimeDto> = emptyList(),
-    // Dopunske ocene sa OMDb-a (3. septembar 2026) - null ako OMDB_API_KEY nije podešen na
-    // serveru, film nema imdb_id, ili OMDb nema podatke za dati film (videti OmdbService).
+    // Extra ratings from OMDb; null if OMDB_API_KEY is not set, the movie has no IMDb id, or OMDb
+    // has no data for it.
     @SerialName("imdb_rating") val imdbRating: Double? = null,
     @SerialName("rotten_tomatoes") val rottenTomatoes: String? = null,
-    // "Istraži više" sekcija na Movie Detail-u: link ka IMDb-u, trejleri i galerija backdrop-ova.
+    // "Explore more" section of the detail screen: IMDb link, trailers and backdrop gallery.
     @SerialName("imdb_id") val imdbId: String? = null,
     val videos: List<MovieVideoDto> = emptyList(),
     val backdrops: List<String> = emptyList()
 )
 
-/** Haversine formula - distanca u km između dve geo-tačke (korisnik i bioskop). */
+/** Haversine distance in km between two points (the user and a cinema). */
 internal fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val earthRadiusKm = 6371.0
     val dLat = Math.toRadians(lat2 - lat1)
@@ -117,32 +111,31 @@ internal fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double)
     return earthRadiusKm * c
 }
 
-// Manje od ovoliko ocenjenih filmova = profil je previše šumovit da bi mu se verovalo za
-// personalizaciju /featured (videti komentar na /featured ruti). Ispod praga se vraćaju generički
-// popularni filmovi, isto kao za korisnika bez ijedne ocene.
+// With fewer rated movies the taste profile is too noisy to personalize /featured; such users get
+// the generic popular movies, like users without any ratings.
 private const val MIN_RATINGS_FOR_PERSONALIZATION = 3
 
-// Ciljni broj filmova po "stranici" predloga - isto koliko TMDB inače vraća po stranici (20), da
-// beskonačan skrol na Home-u nastavi da radi neprimetno kao i pre ove izmene.
+// Movies per page of suggestions - the same as a TMDB page (20), so infinite scrolling on Home
+// keeps working.
 private const val FEATURED_PAGE_SIZE = 20
 
-// Svaki žanr dobija bar ovoliko mesta u predlogu, čak i onaj sa najslabijim afinitetom od top 3 -
-// sprečava da treći žanr praktično nestane iz predloga zbog zaokruživanja.
+// Every genre gets at least this many slots, so the third (weakest) of the top genres does not
+// disappear from the suggestions because of rounding.
 private const val MIN_SLOTS_PER_GENRE = 2
 
-// Koliko TMDB detalj poziva /now-in-cinemas sme da radi istovremeno (pri praznom kešu).
+// How many TMDB detail calls /now-in-cinemas may run at once (when the cache is empty).
 private const val NOW_IN_CINEMAS_TMDB_PARALLELISM = 8
 
-// Koliko dugo se gotov /now-in-cinemas odgovor služi iz memorije (ključ je vreme scrape-a).
+// How long a finished /now-in-cinemas response is served from memory (keyed by scrape time).
 private const val NOW_IN_CINEMAS_CACHE_TTL_MS = 30 * 60 * 1000L
 
 /**
- * Umesto jednog "OR" TMDB discover upita preko sva 3 top žanra (sortiranog isključivo po globalnoj
- * TMDB popularnosti - žanr koji korisnik "malo" voli i žanr koji "mnogo" voli su ranije dobijali
- * podjednak broj mesta), svaki žanr se pretražuje POSEBNO. Broj filmova uzet iz svakog žanra je
- * srazmeran njegovoj prosečnoj oceni (jači afinitet -> više mesta), uz `MIN_SLOTS_PER_GENRE` da i
- * treći/najslabiji žanr ostane vidljivo zastupljen. Isti film može da se pojavi u rezultatima više
- * žanrova (npr. film koji je i Akcija i Triler) - `seen` sprečava duplikate u finalnoj listi.
+ * Personalized suggestions from the user's top genres.
+ *
+ * Each genre is queried separately (instead of one OR query sorted only by global popularity) and
+ * gets a number of slots proportional to the user's average rating for it, with at least
+ * [MIN_SLOTS_PER_GENRE]. A movie can belong to several genres; `seen` prevents duplicates.
+ * Movies the user has already watched ([excludeTmdbIds]) are skipped.
  */
 internal suspend fun fetchBlendedByGenreAffinity(
     fetchGenrePage: suspend (genreId: Int, page: Int) -> List<TmdbMovieMatch>,
@@ -163,8 +156,8 @@ internal suspend fun fetchBlendedByGenreAffinity(
     val result = mutableListOf<TmdbMovieMatch>()
     for ((index, genre) in genres.withIndex()) {
         val slots = slotsByGenre[index]
-        // `seen` se puni tek posle take(): film koji ne uđe u kvotu ovog žanra ostaje dostupan
-        // sledećem žanru.
+        // `seen` is filled only after take(): a movie that does not fit this genre's quota stays
+        // available to the next genre.
         val fromGenre = fetchGenrePage(genre.genreId, page)
             .filter { it.id != null && it.id.toLong() !in excludeTmdbIds && it.id.toLong() !in seen }
             .take(slots)
@@ -184,25 +177,27 @@ private fun TmdbMovieMatch.toDto() = MovieSearchResultDto(
     genreIds = genreIds
 )
 
-// "Prijatelji su gledali ovaj film" bedž na Movie Detail-u - namerno posebna, JWT-zaštićena ruta
-// izvan /api/movies bloka ispod (koji ostaje javan/bez logina), jer zavisi od toga ko pita.
+/**
+ * A friend who watched the movie ("friends watched" badge on the detail screen). Served by a
+ * separate JWT-protected route outside the public /api/movies block, because the answer depends on
+ * who is asking.
+ */
 @Serializable
 data class FriendWatchedDto(
     @SerialName("friend_id") val friendId: String,
     @SerialName("friend_name") val friendName: String,
     val rating: Int? = null,
-    // Kratak tekstualni komentar prijatelja uz ocenu (16. avgust 2026, korisnička žalba: komentari
-    // se nisu prikazivali NIGDE, ni sopstvenom korisniku ni prijateljima) - isto polje kao
-    // HistoryItemDto.review.
+    // The friend's optional note on their rating (same field as HistoryItemDto.review).
     val review: String? = null
 )
 
 @Serializable
 data class FriendsWatchedResponseDto(val friends: List<FriendWatchedDto>)
 
-// "U bioskopima sada" traka na Home-u - iskorišćava postojeći skraping repertoara
-// (ScrapedMoviesRepository, do sad korišćen samo interno za /chat/vision cross-check), grupisano
-// po tmdbId sa listom bioskopa gde se film trenutno prikazuje.
+/**
+ * A movie in the current cinema programme with the cinemas showing it (Home strip, "In cinemas"
+ * screen and semantic search results).
+ */
 @Serializable
 data class NowInCinemasMovieDto(
     val id: Int,
@@ -210,22 +205,23 @@ data class NowInCinemasMovieDto(
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("vote_average") val voteAverage: Double = 0.0,
     val cinemas: List<String> = emptyList(),
-    // Polja za "U bioskopima" ekran (filteri po žanru i Sada/Uskoro, prikaz sa opisom) - popunjena
-    // samo u /now-in-cinemas; semantic-search ih ostavlja podrazumevanim.
+    // Only filled by /now-in-cinemas (genre filter, Now/Coming soon, description);
+    // semantic search leaves the defaults.
     val genres: List<GenreDto> = emptyList(),
     @SerialName("release_date") val releaseDate: String? = null,
     val overview: String? = null,
     val runtime: Int? = null,
-    // true samo ako film NIGDE još ne igra (svi skrapovani redovi su "uskoro").
+    // True only if the movie is not playing anywhere yet (all scraped rows are "coming soon").
     @SerialName("is_upcoming") val isUpcoming: Boolean = false
 )
 
 @Serializable
 data class NowInCinemasResponseDto(val results: List<NowInCinemasMovieDto>)
 
-// E2.3 (2. septembar 2026) - stranica glumca. `character` je ovde (za razliku od CastMemberDto
-// gore koji opisuje glumca IZ UGLA jednog filma) uloga koju je glumac igrao u SVAKOM filmu iz
-// njegove filmografije - otud posebna, "obrnuta" DTO forma sa listom filmova umesto liste glumaca.
+/**
+ * One movie of a person's filmography. Unlike [CastMemberDto] (an actor seen from one movie),
+ * `character` here is the role the person played in this movie.
+ */
 @Serializable
 data class PersonMovieCreditDto(
     val id: Int,
@@ -249,6 +245,11 @@ data class PersonDetailDto(
     @SerialName("movie_credits") val movieCredits: List<PersonMovieCreditDto> = emptyList()
 )
 
+/**
+ * Public movie routes (no sign-in needed, because browsing works without an account): search,
+ * trending, personalized featured (optional sign-in), genres, cinema programme, semantic search,
+ * movie details and person details. Also the JWT-protected "friends watched" route.
+ */
 fun Application.configureMovieRouting(
     tmdbService: TmdbService,
     friendshipsRepository: FriendshipsRepository,
@@ -259,9 +260,9 @@ fun Application.configureMovieRouting(
     localCinemaSemanticIndex: CinemaSemanticIndex,
     omdbService: OmdbService
 ) {
-    // Gotov /now-in-cinemas odgovor - bez ovoga je svaki zahtev (Home ga zove pri svakom pokretanju
-    // aplikacije) posle isteka TMDB keša pravio ~100 TMDB detalj poziva. Ključ je vreme poslednjeg
-    // scrape-a: novi upis repertoara automatski daje novi ključ, pa keš nikad ne kasni za bazom.
+    // Finished /now-in-cinemas response. Without it, every request (Home calls it on every app
+    // start) would make ~100 TMDB detail calls once the TMDB cache expires. The key is the time of
+    // the last scrape, so new programme data automatically gets a new key.
     val nowInCinemasCache = TtlCache<String, NowInCinemasResponseDto>(ttlMillis = NOW_IN_CINEMAS_CACHE_TTL_MS, maxSize = 4)
 
     routing {
@@ -290,12 +291,10 @@ fun Application.configureMovieRouting(
                     }
                 }
 
-                // Personalizacija ISKLJUČIVO za korisnika iz JWT-a (opciona autentikacija: bez tokena ruta
-                // radi i za neulogovane i vraća popularne filmove). Ranije je userId stizao kao javni query
-                // parametar - svako ko zna nečiji ID mogao je da dobije njegove predloge (iz kojih su
-                // izbačeni već gledani filmovi, tj. delimično otkrivaju istoriju gledanja). Query parametar
-                // `userId` koji stari/postojeći Android klijent i dalje šalje se ignoriše - AuthInterceptor
-                // ionako dodaje Bearer token uz svaki zahtev ulogovanog korisnika.
+            // Personalized only for the user from the JWT (optional auth: without a token the route
+            // returns popular movies). The `userId` query parameter older app versions still send
+            // is ignored - otherwise anyone knowing someone's id could read their suggestions, which
+            // partly reveal their watch history.
                 authenticate("auth-jwt", optional = true) {
                     get("/featured") {
                         val userId = call.principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
@@ -338,9 +337,9 @@ fun Application.configureMovieRouting(
                     }
                 }
 
-                // Ceo repertoar (ranije samo prvih 20 - Home traka sad sama uzima 20, a "U bioskopima"
-                // ekran prikazuje sve). TMDB detalji su keširani 1h, ali pri praznom kešu ovo je po jedan
-                // poziv po filmu - Semaphore ograničava paralelizam zbog TMDB rate limita.
+            // The whole programme (the Home strip takes the first 20 itself). TMDB details are
+            // cached for an hour, but with an empty cache this is one call per movie, so a
+            // semaphore limits parallelism because of TMDB's rate limit.
                 get("/now-in-cinemas") {
                     try {
                         val cacheKey = scrapedMoviesRepository.getLatestScrapeTimestamp()?.toString() ?: "empty"
@@ -374,13 +373,13 @@ fun Application.configureMovieRouting(
                                 }
                             }.awaitAll().filterNotNull()
                         }.sortedWith(
-                            // Prvo ono što sada igra, pa po broju bioskopa (šire prikazivano = relevantnije).
+                        // Playing now first, then by number of cinemas (shown more widely = more relevant).
                             compareBy<NowInCinemasMovieDto> { it.isUpcoming }
                                 .thenByDescending { it.cinemas.size }
                         )
                         val response = NowInCinemasResponseDto(results)
-                        // Ne keširamo odgovor kojem fali većina filmova (npr. TMDB je pao usred zahteva) -
-                        // sledeći zahtev treba da pokuša ponovo, a ne da 30 minuta vraća krnju listu.
+                    // Do not cache a response missing most movies (e.g. TMDB failed mid-request);
+                    // the next request should try again instead of serving a short list for 30 minutes.
                         if (results.size >= byTmdbId.size / 2) nowInCinemasCache.put(cacheKey, response)
                         call.respond(response)
                     } catch (e: Exception) {
@@ -456,8 +455,8 @@ fun Application.configureMovieRouting(
                             showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
                         }
 
-                        // Dopunske ocene (IMDb/Rotten Tomatoes) - odvojen poziv od TMDB detalja, ne
-                        // sme oboriti ostatak odgovora ako OMDb padne (videti OmdbService.getRatings).
+                    // Extra ratings (IMDb/Rotten Tomatoes) come from a separate call that must not
+                    // break the rest of the response if OMDb fails.
                         val omdbRatings = try {
                             omdbService.getRatings(detail.imdbId)
                         } catch (e: Exception) {
@@ -491,8 +490,7 @@ fun Application.configureMovieRouting(
                 }
             }
 
-            // E2.3 (2. septembar 2026) - stranica glumca. Javna ruta, isti obrazac kao
-            // /api/movies/{tmdbId} iznad (bez authenticate - pregled glumca ne zahteva prijavu).
+        // Person page (actor/crew). Public, like /api/movies/{tmdbId}.
             route("/api/people") {
                 get("/{id}") {
                     val personId = call.parameters["id"]?.toIntOrNull()

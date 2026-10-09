@@ -13,21 +13,14 @@ import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.update
 
 /**
- * Faza D dorada (23. avgust 2026, korisničko pitanje "zašto se ne bi odmah i embedovan rezultat
- * čuvao... jer trenutno svaki restart backenda potroši ~70 Gemini upita") - trajni keš embeding
- * vektora po (tmdbId, engine), da [com.milinko.services.CinemaSemanticIndex.refresh] ne mora da
- * ponovo embeduje SVAKI film na SVAKOM startu servera, samo one koji su stvarno novi/promenjeni.
+ * Persistent cache of embedding vectors per (movie, engine), so the semantic index does not have
+ * to re-embed every movie on every server start (each Gemini embedding call costs quota).
  *
- * `engine` je isti string koji se koristi i za `?engine=` query parametar rute i za
- * [com.milinko.services.TextEmbedder.key] ("gemini"/"local") - jedan indeks (Gemini ili lokalni
- * MiniLM) ima svoj potpuno odvojen red po filmu, jer vektori različitih embeddera nisu uporedivi.
- *
- * `sourceHash` (SHA-256 heks nad "${title}. ${overview}") postoji da se INVALIDIRA keš ako TMDB
- * naslov/opis filma naknadno promeni tekst (redak slučaj, ali jeftino da se proveri) - ako se
- * hash ne poklapa sa poslednjim upisanim, tretira se kao da embedding uopšte ne postoji i ponovo
- * se računa. `embedding` je čuvan kao obična `text` kolona (zarezom razdvojeni float-ovi) - bez
- * dodatnog Postgres array/vector modula, isti pristup kao `genres` na MoviesTable (JSON u text
- * koloni) jer trenutna verzija Exposed-a (0.41.1) nema prirodnu podršku za array kolone.
+ * - `engine` is the [com.milinko.services.TextEmbedder.key] ("gemini" or "local"). Vectors from
+ *   different engines live in separate rows because they are not comparable.
+ * - `sourceHash` is the SHA-256 of the embedded text ("title. overview"). If TMDB changes the text,
+ *   the hash no longer matches and the vector is recomputed.
+ * - `embedding` is stored as comma-separated floats in a text column (no array/vector extension).
  */
 object MovieEmbeddingsTable : Table("movie_embeddings") {
     val tmdbId = integer("tmdb_id")
@@ -38,7 +31,7 @@ object MovieEmbeddingsTable : Table("movie_embeddings") {
     override val primaryKey = PrimaryKey(tmdbId, engine, name = "movie_embeddings_pkey")
 }
 
-/** Jedan keširan red - vektor plus hash teksta od kog je izračunat (za detekciju promene). */
+/** A cached vector plus the hash of the text it was computed from (used to detect changes). */
 class CachedEmbedding(val sourceHash: String, val embedding: FloatArray)
 
 private fun serializeEmbedding(embedding: FloatArray): String = embedding.joinToString(",")
@@ -46,12 +39,12 @@ private fun serializeEmbedding(embedding: FloatArray): String = embedding.joinTo
 private fun deserializeEmbedding(raw: String): FloatArray =
     if (raw.isBlank()) FloatArray(0) else raw.split(",").map { it.toFloat() }.toFloatArray()
 
+/** Reads and writes [MovieEmbeddingsTable]. */
 class MovieEmbeddingsRepository {
 
     /**
-     * Učitava SVE keširane embeding-e za dati engine JEDNIM upitom (isti obrazac kao
-     * `ScrapedMoviesRepository.getAllScrapedMovies()`) - `CinemaSemanticIndex.refresh()` ovo zove
-     * jednom na početku i posle samo poredi hash po filmu, umesto da radi upit po filmu.
+     * Loads every cached embedding for [engine] in one query, keyed by TMDB id. The semantic index
+     * calls this once per refresh and then only compares hashes per movie.
      */
     suspend fun getEmbeddingsForEngine(engine: String): Map<Int, CachedEmbedding> = dbQuery {
         MovieEmbeddingsTable.selectAll().where { MovieEmbeddingsTable.engine eq engine }
@@ -63,7 +56,7 @@ class MovieEmbeddingsRepository {
             }
     }
 
-    /** Upsert (update ako red već postoji za taj (tmdbId, engine) par, inače insert). */
+    /** Inserts or updates the vector for (tmdbId, engine). */
     suspend fun upsertEmbedding(tmdbId: Int, engine: String, sourceHash: String, embedding: FloatArray) = dbQuery {
         val serialized = serializeEmbedding(embedding)
         val updatedRows = MovieEmbeddingsTable.update({

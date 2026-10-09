@@ -11,15 +11,18 @@ import io.ktor.server.plugins.ratelimit.RateLimit
 import io.ktor.server.plugins.ratelimit.RateLimitName
 import kotlin.time.Duration.Companion.minutes
 
-/**
- * Limiti zahteva po klijentu. Najvažniji su oni ispred Gemini poziva (prepoznavanje slike i
- * semantička pretraga): svaki takav zahtev troši plaćenu kvotu, a semantička pretraga je javna.
- * Prekoračenje vraća 429 (telo postavlja StatusPages u Application.kt).
- */
+// Per-client request limits. The most important ones guard Gemini calls (image recognition and
+// semantic search): every such request costs paid quota, and semantic search is public.
+// Exceeding a limit returns 429 (the body is set by StatusPages, see configureErrorHandling).
+
+/** Image recognition: 10 per minute per user. */
 val RATE_LIMIT_VISION = RateLimitName("vision")
+/** Semantic search: 20 per minute per IP. */
 val RATE_LIMIT_SEMANTIC = RateLimitName("semantic")
+/** Other public movie routes: 120 per minute per IP. */
 val RATE_LIMIT_PUBLIC = RateLimitName("public")
 
+/** Installs the RateLimit plugin with the limits above. */
 fun Application.configureRateLimiting() {
     install(RateLimit) {
         register(RATE_LIMIT_VISION) {
@@ -41,8 +44,8 @@ private fun ApplicationCall.userIdOrNull(): String? =
     principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
 
 /**
- * Render je iza reverse proxy-ja, pa je `remoteHost` adresa proxy-ja, a ne klijenta. Prava adresa
- * je prva u X-Forwarded-For listi.
+ * Render sits behind a reverse proxy, so `remoteHost` is the proxy's address; the client's real
+ * address is the first entry of X-Forwarded-For.
  */
 private fun ApplicationCall.clientIp(): String =
     request.headers[HttpHeaders.XForwardedFor]

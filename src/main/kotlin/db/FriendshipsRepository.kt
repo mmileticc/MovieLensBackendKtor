@@ -14,14 +14,14 @@ import org.jetbrains.exposed.sql.update
 private const val STATUS_PENDING = "PENDING"
 private const val STATUS_ACCEPTED = "ACCEPTED"
 
-/** Ishod slanja zahteva - određuje koje obaveštenje dobija druga strana. */
+/** Outcome of sending a friend request; decides which notification the other user receives. */
 enum class SendRequestResult { SENT, ACCEPTED_EXISTING, ALREADY_EXISTS }
 
-/** Status prijateljstva iz perspektive `userId` u odnosu na `otherUserId`. */
+/** Friendship status as seen by `userId` towards `otherUserId`. */
 enum class FriendshipStatus {
     NONE,
-    PENDING_SENT,     // userId je poslao zahtev, čeka se otherUserId da prihvati
-    PENDING_RECEIVED, // otherUserId je poslao zahtev, userId može da prihvati/odbije
+    PENDING_SENT,     // userId sent a request and waits for otherUserId to accept
+    PENDING_RECEIVED, // otherUserId sent a request; userId can accept or reject it
     ACCEPTED
 }
 
@@ -39,11 +39,12 @@ private fun userFromRow(row: org.jetbrains.exposed.sql.ResultRow) = User(
 )
 
 /**
- * DAO za prijateljstva (Faza 3, MOVIELENS_ROADMAP.md). Pravi request/accept/reject flow (ne
- * instant-add) nad postojećom `friendships` tabelom (sender_id/receiver_id/status).
+ * Friend requests and friendships on top of [FriendshipsTable]: send, accept, reject/remove and
+ * the lists derived from them.
  */
 class FriendshipsRepository {
 
+    /** Status of the relationship between the two users, from [userId]'s point of view. */
     suspend fun getFriendshipStatus(userId: String, otherUserId: String): FriendshipStatus = dbQuery {
         val row = FriendshipsTable.selectAll().where {
             ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId eq otherUserId)) or
@@ -54,8 +55,8 @@ class FriendshipsRepository {
     }
 
     /**
-     * Status prema više korisnika jednim upitom (npr. rezultati pretrage korisnika). Korisnik bez
-     * reda u `friendships` dobija NONE.
+     * Statuses towards several users in one query (e.g. user search results). Users without a
+     * row in `friendships` get [FriendshipStatus.NONE].
      */
     suspend fun getFriendshipStatuses(userId: String, otherUserIds: List<String>): Map<String, FriendshipStatus> {
         if (otherUserIds.isEmpty()) return emptyMap()
@@ -83,9 +84,10 @@ class FriendshipsRepository {
         }
 
     /**
-     * Šalje zahtev za prijateljstvo. Ako otherUserId već ima poslat zahtev ka userId (obrnut
-     * smer), umesto duplog reda odmah prihvata postojeći - uobičajeno ponašanje ("obostrani
-     * zahtev" = odmah prijateljstvo).
+     * Sends a friend request. If [otherUserId] has already sent a request to [userId], that request
+     * is accepted instead of creating a second row (mutual requests mean instant friendship).
+     *
+     * @throws IllegalArgumentException when a user tries to befriend themselves.
      */
     suspend fun sendRequest(userId: String, otherUserId: String): SendRequestResult = dbQuery {
         require(userId != otherUserId) { "Ne možeš poslati zahtev samom sebi" }
@@ -117,7 +119,7 @@ class FriendshipsRepository {
         SendRequestResult.SENT
     }
 
-    /** Prihvata dolazni zahtev - samo primalac (userId) sme da prihvati. */
+    /** Accepts an incoming request; only the receiver ([userId]) can accept. Returns false if there was none. */
     suspend fun acceptRequest(userId: String, otherUserId: String): Boolean = dbQuery {
         val updated = FriendshipsTable.update({
             (FriendshipsTable.senderId eq otherUserId) and
@@ -128,9 +130,8 @@ class FriendshipsRepository {
     }
 
     /**
-     * Odbija dolazni zahtev, otkazuje sopstveni poslati zahtev, ili raskida postojeće
-     * prijateljstvo - sve je isto na nivou baze (brisanje reda), pa se koristi i za reject i za
-     * unfriend i za cancel.
+     * Rejects an incoming request, cancels an outgoing one, or ends a friendship. In the database
+     * all three are the same operation: deleting the row.
      */
     suspend fun removeFriendship(userId: String, otherUserId: String): Unit = dbQuery {
         FriendshipsTable.deleteWhere {
@@ -139,7 +140,7 @@ class FriendshipsRepository {
         }
     }
 
-    /** Lista prihvaćenih prijatelja (userId može biti sender ili receiver u redu). */
+    /** Accepted friends ([userId] can be either the sender or the receiver of the row). */
     suspend fun getFriends(userId: String): List<User> = dbQuery {
         val asSender = FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.receiverId eq UsersTable.id })
@@ -154,7 +155,7 @@ class FriendshipsRepository {
         asSender + asReceiver
     }
 
-    /** Dolazni (nerešeni) zahtevi za userId - da ih prihvati/odbije. */
+    /** Incoming pending requests that [userId] can accept or reject. */
     suspend fun getPendingIncoming(userId: String): List<User> = dbQuery {
         FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.senderId eq UsersTable.id })
@@ -162,12 +163,7 @@ class FriendshipsRepository {
             .map(::userFromRow)
     }
 
-    /**
-     * Odlazni (nerešeni) zahtevi koje je userId poslao - korisnički zahtev (2. septembar 2026,
-     * "da mi budu vidljivi izlistani poslati zahtevi, a ne samo da se otkrije kad ponovo
-     * pretražim osobu"). Simetrična ruta sa getPendingIncoming - isti join, samo obrnut smer
-     * (senderId eq userId umesto receiverId eq userId).
-     */
+    /** Outgoing pending requests sent by [userId] (the mirror of [getPendingIncoming]). */
     suspend fun getPendingOutgoing(userId: String): List<User> = dbQuery {
         FriendshipsTable
             .join(UsersTable, JoinType.INNER, additionalConstraint = { FriendshipsTable.receiverId eq UsersTable.id })
@@ -175,7 +171,7 @@ class FriendshipsRepository {
             .map(::userFromRow)
     }
 
-    /** ID-jevi svih prihvaćenih prijatelja - koristi se za friend activity feed. */
+    /** Ids of all accepted friends (for the activity feed, comments and "friends watched"). */
     suspend fun getFriendIds(userId: String): List<String> = dbQuery {
         val asSender = FriendshipsTable.selectAll().where {
             (FriendshipsTable.senderId eq userId) and (FriendshipsTable.status eq STATUS_ACCEPTED)

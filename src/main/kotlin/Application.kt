@@ -47,25 +47,26 @@ import java.time.LocalDate
 
 private val logger = LoggerFactory.getLogger("Application")
 
-/**
- * Inicijalizacija Ktor aplikacije: ContentNegotiation (kotlinx-json),
- * StatusPages, CORS i povezivanje Gemini servisa.
- */
-
+/** Starts the Netty server; modules are listed in application.yaml (see [module]). */
 fun main(args: Array<String>) {
     EngineMain.main(args)
 }
 
+/**
+ * Application module: plugins (JSON, error handling, CORS, JWT auth, rate limits), the database,
+ * external services, background jobs (scraping or semantic index refresh) and all routes.
+ *
+ * Required environment: APP_JWT_SIGNING_KEY, GEMINI_API_KEY, TMDB_API_KEY, DB_HOST, DB_PASSWORD,
+ * SCRAPING_BOOLEAN (see README for the full list).
+ */
 fun Application.module() {
-    // Inicijalizuj Firebase Admin SDK
     try {
         FirebaseAdminInitializer.init()
     } catch (e: Exception) {
         logger.error("Firebase init failed: ${e.message}")
-        // Ne prekidamo aplikaciju ako Firebase nije dostupan
+        // The server still starts: everything except sign-in and push notifications keeps working.
     }
 
-    // Plugins
     install(ContentNegotiation) {
         json(
             Json {
@@ -81,10 +82,8 @@ fun Application.module() {
 
 
     install(CORS) {
-        // ALLOWED_ORIGINS: opciona ENV promenljiva, comma-separated lista dozvoljenih origina
-        // (npr. "https://app.movielens.rs,https://admin.movielens.rs"). Ako nije postavljena,
-        // ostajemo na anyHost() radi lakšeg lokalnog/mobilnog development-a (Android klijent nema
-        // fiksan origin). Kad se zna produkcioni domen frontenda, postaviti ALLOWED_ORIGINS.
+        // ALLOWED_ORIGINS: optional comma-separated list of allowed origins. When unset, any host is
+        // allowed - the Android app has no fixed origin; set it once a web frontend exists.
         val allowedOrigins = System.getenv("ALLOWED_ORIGINS")
             ?.split(",")
             ?.map { it.trim() }
@@ -110,7 +109,6 @@ fun Application.module() {
         allowHeader(HttpHeaders.Authorization)
     }
 
-    // JWT Authentication Plugin
     val jwtSigningKey = System.getenv("APP_JWT_SIGNING_KEY")
         ?.trim()
         ?.takeIf { it.isNotBlank() }
@@ -122,7 +120,7 @@ fun Application.module() {
 
     DatabaseFactory.init()
 
-    // Repozitorijumi se prave jednom i dele između svih ruta (nemaju stanje osim veze ka bazi).
+    // Repositories are created once and shared by all routes (they hold no state besides the DB connection).
     val scrapedMoviesRepository = ScrapedMoviesRepository()
     val userDao = UserDao()
     val friendshipsRepository = FriendshipsRepository()
@@ -136,7 +134,7 @@ fun Application.module() {
     val notificationsRepository = NotificationsRepository()
     val pushService = PushService(deviceTokensRepository, notificationsRepository)
 
-    // Konfiguracija Gemini API ključa: ENV var ima prioritet, fallback na application.yaml
+    // API keys: the environment variable wins, application.yaml is the fallback.
     val apiKey = System.getenv("GEMINI_API_KEY")
         ?: environment.config.propertyOrNull("ktor.gemini.apiKey")?.getString()
         ?: throw IllegalStateException("GEMINI_API_KEY nije postavljen (ENV) niti u application.yaml pod 'ktor.gemini.apiKey'.")
@@ -179,20 +177,21 @@ fun Application.module() {
 const val JWT_ISSUER = "movienee-backend"
 const val JWT_AUDIENCE = "movienee-android"
 
+/** JSON error body returned to clients: `{"error": "..."}`. */
 @kotlinx.serialization.Serializable
 data class ErrorResponse(val error: String)
 
 /**
- * 502 za neuspeo poziv ka spoljnom servisu (TMDB, Gemini...). Klijent dobija samo [publicMessage];
- * poruka izuzetka ide isključivo u log, jer može da sadrži URL sa API ključem ili delove
- * odgovora spoljnog servisa (videti napomenu kod StatusPages).
+ * Responds 502 for a failed call to an external service (TMDB, Gemini...). The client only gets
+ * [publicMessage]; the exception message goes to the log only, because it can contain the request
+ * URL with an API key or parts of the upstream response.
  */
 suspend fun ApplicationCall.respondUpstreamError(logTag: String, e: Throwable, publicMessage: String) {
     logger.error("$logTag: ${e.message}")
     respond(HttpStatusCode.BadGateway, ErrorResponse(publicMessage))
 }
 
-/** Jednokratno prebacivanje starih base64 avatara iz `users.avatar_url` u `user_avatars`. */
+/** One-time move of old base64 avatars from `users.avatar_url` to `user_avatars`, in the background. */
 fun Application.migrateInlineAvatars(avatarRepository: AvatarRepository) {
     launch {
         try {
@@ -205,11 +204,9 @@ fun Application.migrateInlineAvatars(avatarRepository: AvatarRepository) {
 }
 
 /**
- * Prvi HTTPS pozivi ka TMDB posle boot-a servera (DNS + TLS handshake) znaju da budu sporiji
- * od connect/request timeout-a, pa prvi pravi korisnički zahtevi ponekad puknu dok se konekcija
- * ne "zagreje" (videti i getWithRetry u TmdbService). Ovde tiho odradimo taj "hladan start" u
- * pozadini odmah pri startu servera, umesto da to iskusi korisnik. Kao bonus, ovim se odmah puni
- * popularCache za /api/movies/trending i /featured.
+ * The first HTTPS calls to TMDB after a server start (DNS + TLS handshake) can be slower than the
+ * timeouts, so the first real user requests would sometimes fail. This "cold start" is done here in
+ * the background instead. As a bonus, it fills the popular-movies cache for /trending and /featured.
  */
 fun Application.warmUpTmdbClient(tmdbService: TmdbService) {
     launch {
@@ -223,7 +220,11 @@ fun Application.warmUpTmdbClient(tmdbService: TmdbService) {
     }
 }
 
-
+/**
+ * SCRAPING_BOOLEAN=true: on startup, scrapes all cinemas if the database has no data from today,
+ * then builds the semantic indexes. Production runs with false (the daily scrape runs in GitHub
+ * Actions, see ScraperJob) and uses [configureSemanticIndexRefresh] instead.
+ */
 fun Application.configureScrapingLifecycle(
     repository: ScrapedMoviesRepository,
     tmdbService: TmdbService,
@@ -238,7 +239,7 @@ fun Application.configureScrapingLifecycle(
             val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
             val datumPoslednjegSkrapovanja = repository.getLatestScrapeDate()
 
-            // GLAVNA PROMENA: Pokrećemo ako je baza prazna ILI ako podaci nisu od danas
+            // Scrape when the database is empty or the data is not from today (Belgrade time).
             val trebaSkrapovati = datumPoslednjegSkrapovanja == null || datumPoslednjegSkrapovanja != danasnjiDatum
 
             if (trebaSkrapovati) {
@@ -250,14 +251,11 @@ fun Application.configureScrapingLifecycle(
 
                 val engine = ScrapingEngineConcurrent(sviAktivniScraperi())
                 val skrapovaniFilmovi = engine.runAllScrapers(danasnjiDatum)
-                //
 
-                //dodati zvakom filmo njegov tmdb id
                 logger.info("Pretraga TMDB ID-ja svakom pronadjenom filmu.")
                 val obogaceniFilmovi = skrapovaniFilmovi.enrichWithTmdbIds(tmdbService)
                 logger.info("Zacrsena pretraga TMDB ID-jeva.")
 
-                //
                 if (skrapovaniFilmovi.isNotEmpty()) {
 
 
@@ -287,18 +285,15 @@ fun Application.configureScrapingLifecycle(
 }
 
 /**
- * Bugfix (25. avgust 2026, treći deo) - puni semantičke indekse NEZAVISNO od skrejpovanja, za
- * slučaj SCRAPING_BOOLEAN=false (npr. Render free plan, gde korisnik namerno drži skrepere
- * isključene jer ih taj host ne izdrži). Čita TRENUTNO stanje `scraped_movies` tabele (deljena
- * Supabase baza - skrejpovanje se radi na drugom hostu, npr. GitHub Actions ScraperJob) i gradi
- * oba indeksa od toga, bez pokretanja ijednog skrepera ovde.
+ * Fills the semantic indexes from the current `scraped_movies` table without running any scraper
+ * (SCRAPING_BOOLEAN=false, e.g. on Render, where scraping happens in GitHub Actions and the
+ * database is shared).
  *
- * Posle starta periodično (SEMANTIC_INDEX_POLL_MINUTES, podrazumevano 60) proverava najnoviji
- * `created_at` u `scraped_movies` i osvežava indekse samo kad se promenio - Render instanca se
- * drži budnom cron ping-ovima pa se praktično nikad ne restartuje, a bez ovoga bi semantička
- * pretraga zauvek videla repertoar od trenutka poslednjeg deploy-a. Provera je jedan jeftin
- * MAX() upit; Gemini embedding pozivi se dešavaju samo kad stvarno stignu novi podaci (i tad samo
- * za filmove čiji se tekst promenio - videti MovieEmbeddingsTable keš).
+ * After startup it checks every SEMANTIC_INDEX_POLL_MINUTES (default 60) whether the newest
+ * `created_at` changed and rebuilds the indexes only then. The Render instance is kept awake and
+ * practically never restarts, so without this the semantic search would keep showing the
+ * programme from the last deploy. The check is one cheap MAX() query; Gemini embedding calls only
+ * happen for movies whose text changed (see MovieEmbeddingsTable).
  */
 fun Application.configureSemanticIndexRefresh(
     repository: ScrapedMoviesRepository,
@@ -334,18 +329,13 @@ fun Application.configureSemanticIndexRefresh(
     }
 }
 
-/**
- * Zajednička refresh logika za oba mesta odakle se poziva (configureScrapingLifecycle posle
- * skrejpovanja, i configureSemanticIndexRefresh kad je skrejpovanje isključeno) - videti
- * obrazloženje na oba poziv-mesta zašto su razdvojena u prvom redu.
- */
+/** Rebuilds the Gemini index and, if ENABLE_LOCAL_EMBEDDING=true, the local MiniLM index. */
 suspend fun refreshSemanticIndices(
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex
 ) {
-    // dorada (poređenje Gemini vs. lokalni MiniLM) - osvežavamo OBA indeksa, svaki u
-    // svom try/catch bloku, da pad jednog (npr. Gemini API greška) ne spreči osvežavanje
-    // drugog (lokalni MiniLM nema mrežnu zavisnost pa je manje verovatno da padne).
+    // Each index in its own try/catch, so a failure of one (e.g. a Gemini API error) does not stop
+    // the other.
     try {
         geminiCinemaSemanticIndex.refresh()
     } catch (e: Exception) {
@@ -357,8 +347,8 @@ suspend fun refreshSemanticIndices(
         try {
             localCinemaSemanticIndex.refresh()
         } catch (e: Throwable) {
-            // `Throwable` namerno (ne `Exception`) - baš OutOfMemoryError je razlog zašto
-            // ovaj blok uopšte postoji, videti napomenu iznad.
+            // Throwable on purpose, not Exception: the local model can run out of memory
+            // (OutOfMemoryError) on small hosts, which must not crash the server.
             logger.error("CinemaSemanticIndex (Lokalno/MiniLM).refresh() nije uspeo: ${e.localizedMessage}", e)
         }
     } else {
@@ -366,23 +356,24 @@ suspend fun refreshSemanticIndices(
     }
 }
 /**
- * Poruke grešaka (lokalizacija + StatusPages). Izdvojeno iz [module] da testovi ruta dobiju isto
- * ponašanje bez baze i spoljnih servisa.
+ * Error messages: localization plus StatusPages. Separate from [module] so route tests get the
+ * same behaviour without a database or external services.
  */
 fun Application.configureErrorHandling() {
-    // Poruke grešaka na engleskom za klijente koji šalju Accept-Language: en (videti Localization.kt).
+    // English error messages for clients sending Accept-Language: en (see Localization.kt).
     install(ErrorMessageLocalization)
 
-    // Klijentu NIKAD ne vraćamo poruku internog izuzetka - poruke Ktor HTTP klijenta sadrže pun URL
-    // upstream poziva, a TMDB v3/OMDb ključevi idu baš u URL (?api_key=...). Pun detalj ide samo u
-    // log. Izuzetak: IllegalArgumentException su naše validacione poruke namenjene korisniku.
+    // Never return an internal exception message to the client: Ktor HTTP client messages contain
+    // the full upstream URL, and the TMDB v3/OMDb keys are part of that URL (?api_key=...). The
+    // details go to the log only. Exception: IllegalArgumentException carries our own validation
+    // messages meant for the user.
     install(StatusPages) {
         exception<Throwable> { call, cause ->
             when (cause) {
                 is IllegalArgumentException ->
                     call.respond(HttpStatusCode.BadRequest, call.localizedError(cause.message ?: "Neispravan zahtev"))
                 is BadRequestException -> {
-                    // Neispravno telo zahteva (npr. JSON koji ne odgovara DTO-u u call.receive).
+                    // Invalid request body (e.g. JSON that does not match the DTO in call.receive).
                     logger.warn("Neispravan zahtev ${call.request.local.uri}: ${cause.message}")
                     call.respond(HttpStatusCode.BadRequest, call.localizedError("Neispravan zahtev"))
                 }
@@ -392,20 +383,20 @@ fun Application.configureErrorHandling() {
                 }
             }
         }
-        // RateLimit plugin vraća 429 bez tela - klijent dobija poruku kao i za ostale greške.
+        // The RateLimit plugin answers 429 without a body - the client gets a message like for other errors.
         status(HttpStatusCode.TooManyRequests) { call, status ->
             call.respond(status, call.localizedError("Previše zahteva. Pokušaj ponovo za minut."))
         }
     }
 }
 
-/** JWT autentikacija ("auth-jwt"); izdvojeno iz [module] iz istog razloga kao [configureErrorHandling]. */
+/** JWT authentication ("auth-jwt"); separate from [module] for the same reason as [configureErrorHandling]. */
 fun Application.configureAuthentication(jwtSigningKey: String) {
     install(Authentication) {
         jwt("auth-jwt") {
             realm = "MovieLens Backend"
-            // Token bez issuer/audience (izdat pre oktobra 2026) se odbija sa 401; Android ga tada
-            // sam zameni novim (TokenAuthenticator), bez ponovne prijave korisnika.
+            // Tokens without issuer/audience (issued before October 2026) get 401; the Android app
+            // then fetches a new one by itself (TokenAuthenticator), without signing the user out.
             verifier(
                 JWT.require(Algorithm.HMAC256(jwtSigningKey))
                     .withIssuer(JWT_ISSUER)

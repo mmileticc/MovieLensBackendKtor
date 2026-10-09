@@ -27,11 +27,7 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Prijateljstva (Faza 3, MOVIELENS_ROADMAP.md): pretraga korisnika, slanje/prihvatanje/odbijanje
- * zahteva, lista prijatelja i activity feed (samo "odgledano"/ocene - watchlist ostaje privatan,
- * dogovoreno u planu).
- */
+// DTO field names match the Android models (Gson @SerializedName in UserModels.kt).
 
 @Serializable
 data class UserSearchResultDto(
@@ -49,11 +45,11 @@ data class FriendDto(
     @SerialName("friend_id") val friendId: String,
     val username: String,
     val avatar: String? = null,
-    // Faza 4 - stvarno se računa iz compareTasteProfiles (0 ako nema preseka žanrova).
+    // Computed by compareTasteProfiles (0 when there are no shared genres).
     @SerialName("match_score") val matchScore: Float = 0f,
     @SerialName("common_genres") val commonGenres: List<String> = emptyList(),
-    // Android model (FriendInfo) očekuje ovaj ključ da postoji u JSON-u - Gson kod Kotlin data
-    // klasa ne primenjuje default vrednosti za izostavljene ključeve (bypass-uje konstruktor).
+    // Always empty, but the key must be present: Gson ignores Kotlin default values for missing
+    // keys (it bypasses the constructor), so the app would get null.
     @SerialName("mutual_watchlist") val mutualWatchlist: List<String> = emptyList()
 )
 
@@ -84,7 +80,7 @@ data class FriendActivityDto(
     val action: String,
     @SerialName("tmdb_id") val tmdbId: Long,
     @SerialName("movie_title") val movieTitle: String,
-    // Faza 7 dorada - Profile ekran prikazuje poster umesto plain ikonice/rečenice.
+    // Shown in the activity feed instead of a plain icon.
     @SerialName("poster_path") val posterPath: String? = null,
     val metadata: ActivityMetadataDto = ActivityMetadataDto(),
     val timestamp: Long
@@ -93,7 +89,7 @@ data class FriendActivityDto(
 @Serializable
 data class FriendActivityResponseDto(val activities: List<FriendActivityDto>)
 
-// Profil prijatelja - osnovni info + njegova WATCHED lista (nikad watchlist, taj ostaje privatan).
+// A movie from a friend's watched list (watchlists are never shown to anyone).
 @Serializable
 data class FriendProfileMovieDto(
     @SerialName("tmdb_id") val tmdbId: Long,
@@ -104,29 +100,29 @@ data class FriendProfileMovieDto(
     @SerialName("watched_at") val watchedAt: Long
 )
 
-// Bugfix (E1.5, 2. septembar 2026, feedback testera - "nemogućnost pregleda profila pre slanja
-// zahteva") - RANIJE je ova ruta bezuslovno vraćala 403 dok status nije ACCEPTED. Sad se uvek
-// vraća profil, ali OGRANIČEN dok prijateljstvo nije prihvaćeno: `email`/`commonGenres` popunjeni,
-// `watchedMovies` PRAZNO (nikad se ne otkriva šta je neko gledao pre nego što postane prijatelj -
-// isto pravilo kao i za watchlist, koji se ne otkriva NIKAD, čak ni prijateljima).
-// `friendshipStatus` govori Android klijentu koji prikaz da renderuje (pun profil vs. preview).
+/**
+ * A user's profile as seen by the caller.
+ *
+ * For accepted friends (and oneself) it contains the watched list. For everyone else it is a
+ * limited preview (picture, name, bio, shared genres) so the user can decide whether to send or
+ * accept a request: `watchedMovies` stays empty and `email` is null, because nothing about what
+ * someone watched - or their address - is revealed before the friendship is accepted.
+ * `friendshipStatus` tells the app which version to show.
+ */
 @Serializable
 data class FriendProfileResponseDto(
     val id: String,
     val username: String,
     @SerialName("avatar_url") val avatarUrl: String? = null,
-    // Faza 7 redizajna - prijateljev "mini status" ispod imena, isto polje kao sopstveni profil.
+    // Short status line under the name, like on one's own profile.
     val bio: String? = null,
     @SerialName("watched_movies") val watchedMovies: List<FriendProfileMovieDto>,
-    // Sledeća tri polja - E1.5 dorada.
     val email: String? = null,
     @SerialName("friendship_status") val friendshipStatus: String = "ACCEPTED",
     @SerialName("common_genres") val commonGenres: List<String> = emptyList()
 )
 
-// Movie Night predlozi (Faza 4, korak 2) - Android ugovor za ovo je postojao od ranije
-// (UserModels.kt: MovieSuggestion/SuggestionScores/MovieNightResponse), samo nikad nije bio
-// implementiran na backendu ni pozvan sa UI-ja.
+// Movie Night: suggestions for watching together with a friend.
 @Serializable
 data class SuggestionScoresDto(
     @SerialName("your_match") val yourMatch: Float = 0f,
@@ -141,7 +137,7 @@ data class MovieSuggestionDto(
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("match_reason") val matchReason: String,
     val scores: SuggestionScoresDto = SuggestionScoresDto(),
-    // UX dorada (oktobar 2026) - osnovni podaci da se o filmu može odlučiti bez ulaska u detalje.
+    // Basic data so the user can decide without opening the movie.
     @SerialName("release_date") val releaseDate: String? = null,
     @SerialName("vote_average") val voteAverage: Double? = null,
     @SerialName("genre_ids") val genreIds: List<Int> = emptyList()
@@ -150,15 +146,11 @@ data class MovieSuggestionDto(
 @Serializable
 data class MovieNightResponseDto(
     val suggestions: List<MovieSuggestionDto>,
-    // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
-    // 3-4 ekrana") - da li TMDB ima još stranica za ovaj par žanrova NAKON trenutne. Android strana
-    // (MovieNightViewModel) ranije nije imala ovu informaciju pa je rotirala kroz izmišljenih fiksnih
-    // 5 stranica - sad umesto toga sledi ovaj flag i vraća se na stranicu 1 tek kad je stvarno nema
-    // više šta novo da se ponudi.
+    // Whether TMDB has more pages for this genre mix after the current one; the app pages forward
+    // and starts again from page 1 only when there is nothing new left.
     @SerialName("has_more") val hasMore: Boolean = false,
-    // UX dorada (oktobar 2026) - zaglavlje Movie Night ekrana: ime prijatelja, zajednički žanrovi
-    // (Android ih nudi i kao filter) i ukupno poklapanje ukusa. Isti za sve predloge - zato je ovde,
-    // a ne ponovljen u svakom MovieSuggestionDto.
+    // Movie Night header: friend's name, shared genres (also offered as a filter) and the overall
+    // taste match. The same for all suggestions, so it is here and not in every suggestion.
     @SerialName("friend_username") val friendUsername: String? = null,
     @SerialName("shared_genres") val sharedGenres: List<GenreDto> = emptyList(),
     @SerialName("match_score") val matchScore: Float = 0f
@@ -179,6 +171,11 @@ private fun User.toFriendDto(matchScore: Float = 0f, commonGenres: List<String> 
 
 private fun User.toPendingRequestDto() = PendingRequestDto(id = id, username = username, avatarUrl = avatarUrl)
 
+/**
+ * Friends: user search, friend requests (send/accept/reject/cancel, with push notifications),
+ * the friends list with taste match, pending requests, the activity feed (watched/rated movies only;
+ * watchlists stay private), friend profiles and Movie Night suggestions.
+ */
 fun Application.configureFriendsRouting(
     friendshipsRepository: FriendshipsRepository,
     userDao: UserDao,
@@ -192,8 +189,7 @@ fun Application.configureFriendsRouting(
     routing {
         authenticate("auth-jwt") {
 
-            // Pretraga korisnika za dodavanje prijatelja - flat ruta (nema {userId} path parametra,
-            // "ko sam ja" se čita direktno iz JWT-a).
+            // User search for adding friends. No {userId} in the path - the caller comes from the JWT.
             get("/api/users/search") {
                 val callerId = call.principal<JWTPrincipal>()?.payload?.subject
                     ?: return@get call.respond(HttpStatusCode.Unauthorized)
@@ -227,7 +223,7 @@ fun Application.configureFriendsRouting(
                     get {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
-                        // Profili svih prijatelja i korisnika jednim upitom, pa se korisnik poredi sa svakim.
+                        // Taste profiles of all friends and the user in one query, then compare the user with each.
                         val friendUsers = friendshipsRepository.getFriends(userId)
                         val profiles = tasteProfileRepository.getTasteProfiles(friendUsers.map { it.id } + userId)
                         val selfProfile = profiles[userId].orEmpty()
@@ -245,9 +241,7 @@ fun Application.configureFriendsRouting(
                         call.respond(PendingRequestsResponseDto(pending))
                     }
 
-                    // Korisnički zahtev (2. septembar 2026) - poslati (odlazni) zahtevi, da budu
-                    // vidljivi izlistani kao i prijatelji, ne samo otkriveni ponovnom pretragom te
-                    // osobe. Simetrična ruta sa /pending.
+                    // Outgoing (sent) requests, listed like friends and incoming requests.
                     get("/pending/sent") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
@@ -279,11 +273,8 @@ fun Application.configureFriendsRouting(
                         call.respond(FriendActivityResponseDto(activity))
                     }
 
-                    // Profil prijatelja - pun profil (sa WATCHED listom, nikad watchlist-om) za sebe
-                    // ili ACCEPTED prijatelja. E1.5 dorada (2. septembar 2026) - za bilo koji drugi
-                    // status (NONE/PENDING_SENT/PENDING_RECEIVED) više NE vraća 403, nego OGRANIČEN
-                    // preview (slika/ime/email/opis/presek žanrova, BEZ liste odgledanih filmova) -
-                    // omogućava pregled pre slanja/prihvatanja zahteva za prijateljstvo.
+                    // Full profile (with the watched list, never the watchlist) for oneself or an
+                    // accepted friend; a limited preview for everyone else (see FriendProfileResponseDto).
                     get("/{friendId}/profile") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
@@ -296,9 +287,8 @@ fun Application.configureFriendsRouting(
                         val status = if (friendId == userId) FriendshipStatus.ACCEPTED else friendshipsRepository.getFriendshipStatus(userId, friendId)
 
                         if (status != FriendshipStatus.ACCEPTED) {
-                            // Ograničen preview - presek žanrovskih interesovanja (isti
-                            // compareTasteProfiles helper kao /friends lista), bez otkrivanja
-                            // ičega o gledanim filmovima.
+                            // Limited preview: only the shared genre interests, nothing about
+                            // watched movies.
                             val profiles = tasteProfileRepository.getTasteProfiles(listOf(userId, friendId))
                             val selfProfile = profiles[userId].orEmpty()
                             val friendProfile = profiles[friendId].orEmpty()
@@ -310,8 +300,8 @@ fun Application.configureFriendsRouting(
                                     avatarUrl = friendUser.avatarUrl,
                                     bio = friendUser.bio,
                                     watchedMovies = emptyList(),
-                                    // Email vidi samo prihvaćeni prijatelj - inače bi svako ko zna
-                                    // nečiji ID (npr. iz komentara) mogao da dobije njegovu adresu.
+                                    // Only accepted friends see the email - otherwise anyone who knows
+                                    // a user id (e.g. from a comment) could get the address.
                                     email = null,
                                     friendshipStatus = status.name,
                                     commonGenres = match.commonGenres
@@ -343,16 +333,16 @@ fun Application.configureFriendsRouting(
                         )
                     }
 
-                    // Movie Night predlozi - samo za ACCEPTED prijatelje. Discover po zajedničkim
-                    // omiljenim žanrovima (compareTasteProfiles), isključuje filmove koje je BILO
-                    // KO od njih dvoje već odgledao (userActionsRepository.getHistory = WATCHED).
+                    // Movie Night suggestions, for accepted friends only: TMDB discover by the shared
+                    // favourite genres (compareTasteProfiles), excluding movies either of them has
+                    // already watched.
                     get("/{friendId}/movienight-suggestions") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
                         val friendId = call.parameters["friendId"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nedostaje friendId"))
-                        // ?page= - koristi Android "Osveži predloge" dugme da dobije drugu TMDB
-                        // discover stranicu za isti par žanrova umesto uvek istih prvih 10 rezultata.
+                        // ?page= lets the app's "Refresh suggestions" button get the next TMDB page
+                        // for the same genres instead of always the first results.
                         val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
 
                         val status = friendshipsRepository.getFriendshipStatus(userId, friendId)
@@ -367,8 +357,8 @@ fun Application.configureFriendsRouting(
                         val friendUsername = userDao.findById(friendId)?.username
 
                         if (match.sharedGenreIds.isEmpty()) {
-                            // Nema preseka žanrova (nedovoljno zajedničkih ocena) - nema šta pametno
-                            // da se predloži umesto da izmišljamo nasumične filmove.
+                            // No shared genres (not enough common ratings): suggest nothing rather
+                            // than make up random movies.
                             return@get call.respond(MovieNightResponseDto(emptyList(), friendUsername = friendUsername))
                         }
 
@@ -384,16 +374,12 @@ fun Application.configureFriendsRouting(
                             .map { it.tmdbId }
                             .toSet()
 
-                        // Dorada (25. avgust 2026) - koristi novu metodu koja i vraća total_pages
-                        // (videti TmdbService.getMoviesByGenresWithTotalPages), umesto stare
-                        // getMoviesByGenres koja je taj podatak tiho odbacivala.
                         val discoverPage = tmdbService.getMoviesByGenresWithTotalPages(topGenreIds, page)
                         val suggestions = discoverPage.movies
                             .filter { it.id != null && it.id.toLong() !in alreadySeen }
                             .take(10)
                             .map { movie ->
-                                // Razlog po filmu: koje od ZAJEDNIČKIH omiljenih žanrova ovaj film ima
-                                // (ranije ista rečenica sa glavnim žanrom za svaki predlog).
+                                // The reason per movie: which of the shared favourite genres it has.
                                 val movieSharedGenres = sharedGenres.filter { it.id in movie.genreIds }
                                     .ifEmpty { sharedGenres.take(1) }
                                 MovieSuggestionDto(
@@ -447,7 +433,7 @@ fun Application.configureFriendsRouting(
                                         friendId, PushType.FRIEND_REQUEST, "$name ti je poslao zahtev za prijateljstvo",
                                         mapOf("actorId" to userId, "actorName" to name)
                                     )
-                                    // Obostrani zahtev -> prijateljstvo je odmah prihvaćeno.
+                                    // Mutual requests: the friendship was accepted right away.
                                     SendRequestResult.ACCEPTED_EXISTING -> pushService.notifyAsync(
                                         friendId, PushType.FRIEND_ACCEPTED, "$name je prihvatio tvoj zahtev za prijateljstvo",
                                         mapOf("actorId" to userId, "actorName" to name)

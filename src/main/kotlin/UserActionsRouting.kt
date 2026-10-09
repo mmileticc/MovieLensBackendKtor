@@ -29,11 +29,7 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("UserActionsRouting")
 
-/**
- * Watchlist i "odgledano"/ocena (Faza 2, MOVIELENS_ROADMAP.md). Sve rute su iza JWT auth-a i
- * eksplicitno proveravaju da path {userId} odgovara JWT subject-u - Android ugovor šalje userId
- * kao path parametar, pa bez ove provere bi teoretski neko mogao da menja tuđu listu.
- */
+// DTO field names match the Android models (Gson @SerializedName).
 
 @Serializable
 data class WatchlistItemDto(
@@ -41,9 +37,9 @@ data class WatchlistItemDto(
     val title: String,
     @SerialName("poster_path") val posterPath: String? = null,
     @SerialName("added_at") val addedAt: Long,
-    // Nema priority koncepta u stvarnoj šemi - uvek 0 (Android ga i dalje samo uslovno prikazuje).
+    // No priority in the schema - always 0.
     val priority: Int = 0,
-    // Za filtere/sortiranje Biblioteke (žanr, godina, TMDB ocena) - videti MoviesTable.voteAverage.
+    // For the Library filters and sorting (genre, year, TMDB rating).
     val genres: List<GenreDto> = emptyList(),
     @SerialName("release_year") val releaseYear: Int? = null,
     @SerialName("vote_average") val voteAverage: Double? = null
@@ -60,13 +56,12 @@ data class HistoryItemDto(
     @SerialName("tmdb_id") val tmdbId: Long,
     val title: String,
     @SerialName("poster_path") val posterPath: String? = null,
-    // 0.0 = odgledano bez ocene (rating je null u bazi). Android prikazuje "X/10" bez posebne
-    // provere za "nema ocene" - poznato pojednostavljenje za MVP, videti MOVIELENS_ROADMAP.md.
+    // 0.0 = watched without a rating (rating is null in the database).
     @SerialName("user_rating") val userRating: Double = 0.0,
-    // Kratak tekstualni komentar uz ocenu (16. avgust 2026) - opcion, nezavisan od userRating-a.
+    // Optional note attached to the rating.
     val review: String? = null,
     @SerialName("watched_at") val watchedAt: Long,
-    // Nema duration kolone u stvarnoj šemi - uvek 0 (Android ekran ga ni ne prikazuje).
+    // No duration column in the schema - always 0.
     val duration: Int = 0,
     val genres: List<GenreDto> = emptyList(),
     @SerialName("release_year") val releaseYear: Int? = null,
@@ -79,15 +74,13 @@ data class HistoryResponseDto(val items: List<HistoryItemDto>)
 @Serializable
 data class AddToHistoryRequest(val tmdbId: Int, val rating: Double? = null, val review: String? = null, val duration: Int? = null)
 
-// `review = null` znači "ne diraj postojeći komentar" (npr. brzi PUT samo za ocenu iz Library ->
-// Istorija taba, gde review polje nije ni prikazano) - videti napomenu u
-// UserActionsRepository.markWatched o null-vs-prazan-string razlici.
-// `rating` je nullable (izmena u odnosu na raniju verziju) - podržava "napiši komentar bez ocene"
-// (film je odgledan, ali korisnik namerno ne daje zvezdice, samo ostavlja utisak u tekstu).
+// `review = null` means "keep the existing note" (e.g. a quick rating change from the Library,
+// where the note is not shown); `rating = null` means "keep the existing rating". See
+// UserActionsRepository.markWatched.
 @Serializable
 data class UpdateHistoryRequest(val rating: Double? = null, val review: String? = null)
 
-// Taste profile (Faza 4) - prosečna ocena po žanru, izvedeno direktno iz ocena bez "crne kutije".
+// Taste profile: average rating per genre, derived directly from the user's ratings.
 @Serializable
 data class GenreAffinityDto(
     @SerialName("genre_id") val genreId: Int,
@@ -99,10 +92,8 @@ data class GenreAffinityDto(
 @Serializable
 data class TasteProfileResponseDto(val genres: List<GenreAffinityDto>)
 
-// Profil korisnika (Faza 7 redizajna) - GET/PUT /api/users/{userId}. Ranije nije postojalo na
-// backendu (Android je imao Retrofit ugovor spreman, ali je uvek dobijao 404 - videti
-// ProfileViewModel/SessionIdentityHeader fallback). username je jedinstven (kao Instagram handle),
-// bio je slobodan kratak opis - oboje se menjaju preko PUT /profile (UserDao.updateProfile).
+// Own profile (GET/PUT /api/users/{userId}): username (unique, like an Instagram handle), bio,
+// avatar, top genres and statistics.
 @Serializable
 data class UserStatsDto(
     @SerialName("movies_watched") val moviesWatched: Int = 0,
@@ -121,11 +112,9 @@ data class UserProfileDto(
     val stats: UserStatsDto = UserStatsDto()
 )
 
-// Android šalje ceo UserProfile objekat u PUT telu (postojeći Retrofit ugovor), ali ovde nam
-// trebaju samo username/bio/avatar - ignoreUnknownKeys=true (Application.kt) tiho ignoriše ostatak
-// (user_id/email/favorite_genres/stats) koji klijent ionako ne treba da menja ovom rutom.
-// avatar je opcion: null znači "ne diraj postojeću sliku" (korisnik menja samo username/bio bez
-// biranja nove slike) - da PUT bez izabrane slike ne obriše postojeći avatar.
+// The app sends its whole UserProfile object in the PUT body; only username/bio/avatar are read
+// (ignoreUnknownKeys drops the rest). `avatar` changes the picture only when it is a new data URI
+// (see UserDao.updateProfile).
 @Serializable
 data class UpdateProfileRequestDto(
     val username: String,
@@ -163,14 +152,14 @@ private fun UserActionMovieRow.toHistoryDto() = HistoryItemDto(
     voteAverage = voteAverage
 )
 
-// Koliko filmova sa nepotpunim kešom (bez žanrova/TMDB ocene) se dopuni po jednom učitavanju liste.
+// How many movies with an incomplete cache (no genres/TMDB rating) are backfilled per list load.
 private const val BACKFILL_LIMIT_PER_REQUEST = 10
 
 /**
- * Filmovi dodati pre nego što su `genres`/`vote_average` kolone postojale nemaju te podatke, pa
- * filteri Biblioteke na Androidu za njih ne bi radili. Umesto ručne migracije, svako učitavanje
- * liste u pozadini dopuni do [BACKFILL_LIMIT_PER_REQUEST] takvih filmova (ensureCached) - odgovor
- * se ne čeka na to; sledeće otvaranje Biblioteke već dobija dopunjene podatke.
+ * Movies cached before `genres`/`vote_average` were stored lack that data, so the Library filters
+ * would not work for them. Instead of a manual migration, every list load backfills up to
+ * [BACKFILL_LIMIT_PER_REQUEST] such movies in the background; the response does not wait, and the
+ * next time the Library opens the data is complete.
  */
 private fun Application.backfillMovieCache(
     rows: List<UserActionMovieRow>,
@@ -192,12 +181,18 @@ private fun Application.backfillMovieCache(
 
 private const val REVIEW_MAX_LENGTH = 1000
 
-/** Zaokružuje na najbliži ceo broj i ograničava na [1,10] (DB CHECK opseg). Null ostaje null. */
+/** Rounds to the nearest integer and clamps to 1-10 (the database CHECK range). Null stays null. */
 internal fun Double?.toRatingIntOrNull(): Int? {
     if (this == null) return null
     return Math.round(this).toInt().coerceIn(1, 10)
 }
 
+/**
+ * The signed-in user's own data: profile, watchlist, watched/rated movies and taste profile.
+ *
+ * Every route checks that the `{userId}` path segment equals the JWT subject, so nobody can read or
+ * change another user's lists.
+ */
 fun Application.configureUserActionsRouting(
     tmdbService: TmdbService,
     userActionsRepository: UserActionsRepository,
@@ -216,9 +211,7 @@ fun Application.configureUserActionsRouting(
                     return if (pathUserId == tokenUserId) pathUserId else null
                 }
 
-                // Sastavlja UserProfileDto iz UserDao.User + izvedenih statistika (watchlist/history
-                // rute su iznad, taste profile ispod - sve nezavisni pozivi, nema smisla dodavati
-                // async/paralelizaciju za samo self-profil poziv niskog obima).
+                // Profile plus derived statistics (watched/rated counts, friends, top genres).
                 suspend fun buildUserProfileDto(userId: String, user: User): UserProfileDto {
                     val history = userActionsRepository.getHistory(userId)
                     val friendCount = friendshipsRepository.getFriends(userId).size
@@ -336,16 +329,10 @@ fun Application.configureUserActionsRouting(
                             ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nevalidan tmdbId"))
                         val req = call.receive<UpdateHistoryRequest>()
 
-                        // Bugfix (E1.1, 2. septembar 2026, feedback testera - "Update history failed: 404"
-                        // pri izmeni ocene) - RANIJE je PUT vraćao 404 ako red ne postoji, oslanjajući se
-                        // na to da je klijent UVEK prvo odradio POST /history. U praksi se lokalni
-                        // (Room/uiState) i stvarni backend zapis znaju raspetljati - npr. keš na Movie
-                        // Detail ekranu misli da je film već označen odgledanim (iz nekog ranijeg,
-                        // možda neuspešnog POST-a, ili posle brisanja na drugom ekranu), pa
-                        // MovieDetailViewModel.rateMovie šalje PUT umesto POST - i taj PUT je pucao. Sad
-                        // je PUT samoisceljujući: ako red ne postoji, ponaša se kao POST (uključujući
-                        // ensureCached, isto što POST grana radi) umesto da vrati grešku - "update" i
-                        // "create" postaju efektivno isti idempotentni upsert iz klijentove perspektive.
+                        // PUT works as an idempotent upsert: if the row does not exist it behaves like
+                        // POST. The app's local state can disagree with the server (e.g. an earlier
+                        // failed POST, or a removal on another screen), and the app then sends PUT for
+                        // a movie that is not marked as watched on the server.
                         val existing = userActionsRepository.getHistoryItem(userId, tmdbId)
                         if (existing == null) {
                             try {
@@ -366,7 +353,7 @@ fun Application.configureUserActionsRouting(
                         call.respond(updated.toHistoryDto())
                     }
 
-                    // "Undo" za slučajan (lapsus) klik na "Označi kao odgledano" - briše i ocenu
+                    // Undo for an accidental "mark as watched" - also removes the rating.
                     delete("/{tmdbId}") {
                         val userId = call.ownerUserIdOrNull()
                             ?: return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
@@ -377,8 +364,7 @@ fun Application.configureUserActionsRouting(
                     }
                 }
 
-                // Faza 4 - prosečna ocena po žanru, izvedeno iz WATCHED+rated filmova. Samo za
-                // sebe za sada (ownerUserIdOrNull) - poređenje sa prijateljem dolazi kasnije.
+                // Average rating per genre from watched and rated movies (own profile only).
                 get("/taste-profile") {
                     val userId = call.ownerUserIdOrNull()
                         ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovom profilu"))

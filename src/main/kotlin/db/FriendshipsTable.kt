@@ -7,9 +7,9 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 
 /**
- * Zahtevi/prijateljstva između korisnika. Postoji već u Supabase-u; usklađivanje koda sa
- * stvarnom šemom. Odgovara planu iz Faze 3 (MOVIELENS_ROADMAP.md) — sender/receiver + status
- * (pending/accepted/rejected), pravi friend-request flow umesto instant-add.
+ * Friend requests and friendships. One row per pair: the sender of the original request, the
+ * receiver, and the status (PENDING until the receiver accepts, then ACCEPTED). Rejecting or
+ * removing a friend deletes the row.
  */
 object FriendshipsTable : Table("friendships") {
     val senderId = varchar("sender_id", 64) references UsersTable.id

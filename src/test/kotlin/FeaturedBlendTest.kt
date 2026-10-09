@@ -52,8 +52,8 @@ class FeaturedBlendTest {
 
     @Test
     fun `movie left out of one genre quota is still available to the next genre`() = runBlocking {
-        // Žanr 1 dobija samo 2 mesta (minimum), pa film 99 ne ulazi u njegovu kvotu - mora da
-        // ostane dostupan žanru 2, gde je jedini kandidat.
+        // Genre 1 only gets 2 slots (the minimum), so movie 99 does not fit its quota - it must stay
+        // available to genre 2, where it is the only candidate.
         val result = fetchBlendedByGenreAffinity(
             { genreId, _ -> if (genreId == 1) listOf(movie(10), movie(11), movie(99)) else listOf(movie(99)) },
             listOf(affinity(1, 0.0), affinity(2, 0.0)),

@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("PushService")
 
-/** Vrste obaveštenja; ime (`name`) ide klijentu kao `type` i čuva se u notifications tabeli. */
+/** Notification types. The name is sent to the app as `type` and stored in the notifications table. */
 enum class PushType {
     FRIEND_REQUEST,
     FRIEND_ACCEPTED,
@@ -28,12 +28,14 @@ enum class PushType {
 }
 
 /**
- * Slanje push obaveštenja preko FCM-a. Šalje se samo "data" poruka (tip + podaci, npr. ime
- * prijatelja i film) - tekst sastavlja aplikacija iz svojih stringova, pa je obaveštenje uvek na
- * jeziku aplikacije i poštuje korisnikova podešavanja (isključeni tipovi se ne prikazuju).
+ * Sends push notifications through FCM.
  *
- * Svako obaveštenje se upisuje i u `notifications` (istorija/inbox), čak i kad korisnik nema
- * registrovan uređaj.
+ * Only "data" messages are sent (type plus details such as the friend's name and the movie); the
+ * app builds the text from its own strings, so it is always in the app's language and respects
+ * the user's per-type settings.
+ *
+ * Every notification is also stored in `notifications` (history shown in the app), even when the
+ * user has no registered device.
  */
 class PushService(
     private val deviceTokens: DeviceTokensRepository,
@@ -41,14 +43,17 @@ class PushService(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** Za rute: ne čeka slanje, pa push nikad ne usporava odgovor korisniku. */
+    /** Fire-and-forget variant for routes: the response to the user never waits for FCM. */
     fun notifyAsync(userId: String, type: PushType, inboxText: String, data: Map<String, String>, dedupeKey: String? = null) {
         scope.launch { notify(userId, type, inboxText, data, dedupeKey) }
     }
 
     /**
-     * @param inboxText čitljiv opis na srpskom za `notifications.content` (kolona je obavezna).
-     * @return false ako je obaveštenje sa istim [dedupeKey] već poslato ovom korisniku.
+     * Stores the notification and sends it to all of the user's devices.
+     *
+     * @param inboxText readable Serbian text for `notifications.content` (the column is required).
+     * @param dedupeKey if set and already stored for this user, nothing is sent.
+     * @return false if it was a duplicate or sending failed.
      */
     suspend fun notify(userId: String, type: PushType, inboxText: String, data: Map<String, String>, dedupeKey: String? = null): Boolean {
         try {
@@ -69,7 +74,7 @@ class PushService(
             val message = MulticastMessage.builder()
                 .addAllTokens(tokens)
                 .putAllData(data + ("type" to type.name))
-                // Visok prioritet: data poruka mora da probudi aplikaciju da bi prikazala obaveštenje.
+                // High priority: a data message has to wake the app so it can show the notification.
                 .setAndroidConfig(AndroidConfig.builder().setPriority(AndroidConfig.Priority.HIGH).build())
                 .build()
             val response = FirebaseMessaging.getInstance().sendEachForMulticast(message)
@@ -88,7 +93,7 @@ class PushService(
             }
             return true
         } catch (e: Exception) {
-            // Push nije kritičan - greška se samo loguje, akcija korisnika je već uspela.
+            // Push is not critical: only log, the user's action has already succeeded.
             logger.warn("Slanje obaveštenja $type korisniku $userId nije uspelo: ${e.message}")
             return false
         }

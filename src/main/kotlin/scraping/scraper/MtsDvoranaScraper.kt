@@ -10,6 +10,10 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("MtsDvoranaScraper")
 
+/**
+ * mts Dvorana (Belgrade), mtsdvorana.rs. The home page lists the current programme and
+ * `/filmovi/uskoro` the coming-soon movies; each movie's own page provides the original title.
+ */
 class MtsDvoranaScraper : CinemaScraper {
     override val cinemaName = "MTS Dvorana"
     private val baseUrl = "https://www.mtsdvorana.rs"
@@ -26,7 +30,7 @@ class MtsDvoranaScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/"
         val urlUskoro = "$baseUrl/filmovi/uskoro"
 
-        // 1. Skrapovanje trenutnog repertoara
+        // 1. Current programme
         try {
             val docRepertoar = Jsoup.connect(urlRepertoar)
                 .userAgent(mojUserAgent)
@@ -38,10 +42,10 @@ class MtsDvoranaScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju glavne stranice repertoara: ${e.message}")
         }
 
-        // Pravimo skup linkova koji već igraju na repertoaru da bismo preskočili njihovo ponovno skrapovanje unutar "Uskoro"
+        // Links already in the programme, so their pages are not fetched again for "coming soon".
         val skrapovaniLinkoviNaRepertoaru = tekuciFilmovi.map { it.bookingUrl }.toSet()
 
-        // 2. Skrapovanje sekcije "Uskoro"
+        // 2. "Coming soon" section
         try {
             val docUskoro = Jsoup.connect(urlUskoro)
                 .userAgent(mojUserAgent)
@@ -53,8 +57,7 @@ class MtsDvoranaScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
         }
 
-        // 3. Interna deduplikacija pomoću originalTitle (ili title ako je originalTitle null)
-        // Tekući filmovi imaju apsolutni prioritet
+        // 3. De-duplicate by originalTitle (or title when there is none); the current programme wins.
         val filtriranaMapa = tekuciFilmovi.associateBy { it.originalTitle ?: it.title }.toMutableMap()
 
         for (upcomingIno in upcomingFilmovi) {
@@ -70,11 +73,9 @@ class MtsDvoranaScraper : CinemaScraper {
     }
 
     /**
-     * mtsdvorana.rs je redizajniran (oktobar 2026) u Nuxt + Tailwind - stare ".movie-item"
-     * kartice više ne postoje. Kartice su i dalje server-renderovane (Jsoup je dovoljan):
-     * `<a href="/film/<slug>" class="group block"><img/><h3>Naslov</h3><p>Žanr</p></a>`.
-     * Početna strana u istom formatu prikazuje i događaje ("/dogadjaj/..."), pa filtriramo
-     * isključivo linkove ka "/film/". Ista kartica se ne ponavlja, ali distinct ostaje radi sigurnosti.
+     * The site is a Nuxt + Tailwind app, but the movie cards are server-rendered, so Jsoup is
+     * enough: `<a href="/film/<slug>" class="group block"><img/><h3>Title</h3><p>Genre</p></a>`.
+     * The home page also lists events ("/dogadjaj/..."), so only "/film/" links are kept.
      */
     private fun parseMoviesFromDoc(doc: Document, isUpcoming: Boolean, vecSkrapovaniLinkovi: Set<String>): List<ScrapedMovie> {
         val result = mutableListOf<ScrapedMovie>()
@@ -91,8 +92,8 @@ class MtsDvoranaScraper : CinemaScraper {
             if (naslov.isNotEmpty() && link.isNotEmpty()) {
                 val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
 
-                // Pametna provera: Ako film iz "Uskoro" sekcije ima link koji smo VEĆ skrapovali na repertoaru,
-                // preskačemo otvaranje njegove stranice jer je on stoprocentni duplikat.
+                // A coming-soon movie whose link is already in the programme is a duplicate - skip
+                // fetching its page.
                 if (isUpcoming && vecSkrapovaniLinkovi.contains(link)) {
                     logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz repertoar)")
                     continue
@@ -103,7 +104,7 @@ class MtsDvoranaScraper : CinemaScraper {
 
                 logger.info("[$cinemaName] [$tipLoga] Obrada filma: $naslov")
 
-                // Otvaramo pojedinačnu stranicu filma samo ako je potrebno
+                // Fetch the movie's own page only when needed (original title).
                 val originalniNaslov = scrapeOriginalTitle(link)
 
                 result.add(
@@ -132,8 +133,8 @@ class MtsDvoranaScraper : CinemaScraper {
                 .timeout(5000)
                 .get()
 
-            // Novi sajt (ista "hf-*" platforma kao Cine Grand) - originalni naslov je u ".hf-original"
-            // (pojavljuje se 2x zbog mobilnog/desktop layout-a, zato first()).
+            // Same "hf-*" platform as Cine Grand: the original title is in ".hf-original" (present
+            // twice because of the mobile and desktop layouts, hence first()).
             val originalTitle = doc.select(".hf-original").first()?.text()?.trim().orEmpty()
             originalTitle.ifEmpty { null }
         } catch (e: IOException) {

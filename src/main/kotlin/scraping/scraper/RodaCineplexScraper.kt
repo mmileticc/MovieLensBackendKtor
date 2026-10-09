@@ -12,16 +12,11 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("RodaCineplexScraper")
 
 /**
- * rodacineplex.com pripada ISTOJ firmi (Art Vista d.o.o.) i ISTOJ platformi kao Arena Cineplex
- * (footer oba sajta: "ARENA CINEPLEX | RODA CINEPLEX | MOBIL3DCINEMA") - ista URL šema
- * ("/repertoar/YYYY-MM-DD", "/uskoro"), ista opšta struktura kartice filma (poster + naslov +
- * originalni naslov + termini). Ovaj scraper je zato NAMERNO skoro identičan
- * ArenaCineplexScraper-u - iste selektore koristi i ovde, uz drugačiji baseUrl/lokaciju.
+ * Roda Cineplex (Belgrade), rodacineplex.com. Same company and platform as Arena Cineplex (same
+ * URL scheme `/repertoar/YYYY-MM-DD` and `/uskoro`, same `li.replist` cards), so this scraper is
+ * intentionally almost identical to [ArenaCineplexScraper] with a different base URL and location.
  *
- * NAPOMENA: selektori (`li.replist`, `div.col-md-5`) NISU potvrđeni direktno na Roda HTML-u (samo
- * markdown-konvertovan sadržaj je bio dostupan pri istraživanju, bez CSS klasa) - pretpostavka je
- * zasnovana na deljenoj platformi/firmi. Ako ovaj scraper vrati 0 filmova, `scraper-debug/` HTML
- * snimak (snima se automatski pri grešci/praznom rezultatu) će pokazati tačnu razliku.
+ * If it ever returns 0 movies, the HTML snapshot saved to `scraper-debug/` shows what changed.
  */
 class RodaCineplexScraper : CinemaScraper {
     override val cinemaName = "Roda Cineplex"
@@ -40,7 +35,7 @@ class RodaCineplexScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/repertoar/${date.format(formatter)}"
         val urlUskoro = "$baseUrl/uskoro"
 
-        // 1. Skrapovanje trenutnog repertoara (isUpcoming = false)
+        // 1. Current programme (isUpcoming = false)
         try {
             val docRepertoar = Jsoup.connect(urlRepertoar)
                 .userAgent(mojUserAgent)
@@ -56,7 +51,7 @@ class RodaCineplexScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju repertoara: ${e.message}")
         }
 
-        // 2. Skrapovanje sekcije "Uskoro" (isUpcoming = true)
+        // 2. "Coming soon" section (isUpcoming = true)
         try {
             val docUskoro = Jsoup.connect(urlUskoro)
                 .userAgent(mojUserAgent)
@@ -68,7 +63,7 @@ class RodaCineplexScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
         }
 
-        // 3. Interna deduplikacija unutar ovog bioskopa (isti obrazac kao Arena Cineplex)
+        // 3. De-duplicate within this cinema (same as Arena Cineplex).
         val filtriranaMapa = tekuciFilmovi.associateBy { it.originalTitle ?: it.title }.toMutableMap()
 
         for (upcomingIno in upcomingFilmovi) {

@@ -13,9 +13,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 
 /**
- * Javna ruta za profilne slike (bez prijave - avatari se vide i u komentarima koje čitaju gosti).
- * URL nosi `?v=<hash>`, pa se sadržaj na istoj adresi nikad ne menja i klijent sme da ga kešira
- * neograničeno; nova slika dobija novi URL.
+ * Public route for profile pictures (no sign-in: avatars also appear in comments that guests can
+ * read). The URL carries `?v=<hash>`, so the content behind a URL never changes and clients may
+ * cache it forever; a new picture gets a new URL.
  */
 fun Application.configureAvatarRouting(avatarRepository: AvatarRepository) {
     routing {

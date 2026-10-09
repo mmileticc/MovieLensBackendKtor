@@ -5,24 +5,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Faza D dorada (17. avgust 2026, korisničko pitanje "je l postoji biblioteka koja bi to radila
- * lokalno da se ne ide Gemini-ju uopšte") - apstrakcija nad "kako se tekst pretvara u vektor",
- * da [CinemaSemanticIndex] ne zavisi direktno od Gemini-ja. Dve implementacije ispod NAMERNO
- * postoje USPOREDO (ne zamena jedne drugom) - korisnik želi da uporedi ponašanje/kvalitet, ne da
- * trajno pređe sa jedne na drugu. `embedDocument`/`embedQuery` su odvojeni jer Gemini ima
- * `taskType` razdvajanje (bolji kvalitet), dok lokalni MiniLM model tu razliku nema (obe metode
- * rade identično) - ovim se ta asimetrija sakriva iza istog interfejsa.
+ * Turns text into an embedding vector, so [CinemaSemanticIndex] does not depend on one provider.
+ *
+ * Two implementations exist side by side (Gemini and a local MiniLM model) to compare quality.
+ * Documents and queries are embedded separately because Gemini supports a task type for each
+ * (better results); the local model treats both the same.
  */
 interface TextEmbedder {
-    /** Kratak identifikator za logove ("Gemini", "Lokalno (MiniLM)") - ne utiče na sam vektor. */
+    /** Short name for logs ("Gemini", "Lokalno (MiniLM)"); does not affect the vector. */
     val label: String
-    /** Kratak identifikator za API parametar `engine` ("gemini", "local") - ne utiče na sam vektor. */
+    /** Value of the `engine` API parameter ("gemini" or "local"); also the cache key in MovieEmbeddingsTable. */
     val key: String
+    /** Embeds a document (a movie's title and overview) for the index. */
     suspend fun embedDocument(text: String): FloatArray
+    /** Embeds a user's search query. */
     suspend fun embedQuery(text: String): FloatArray
 }
 
-/** Tanak omotač oko postojećeg [GeminiService.embedText] - REST poziv, videti obrazloženje tamo. */
+/** Gemini embeddings via [GeminiService.embedText] (REST). */
 class GeminiTextEmbedder(private val geminiService: GeminiService) : TextEmbedder {
     override val label = "Gemini"
     override val key = "gemini"
@@ -31,16 +31,13 @@ class GeminiTextEmbedder(private val geminiService: GeminiService) : TextEmbedde
 }
 
 /**
- * MiniLM (all-MiniLM-L6-v2, 384 dimenzije) preko langchain4j - ONNX runtime i težine modela su
- * upakovani direktno u jar (`langchain4j-embeddings-all-minilm-l6-v2` zavisnost), NEMA download-a
- * pri startu, NEMA mrežnog poziva pri embedovanju - potpuno offline, bez API ključa. Model se
- * učitava JEDNOM (konstruktor) i ponovo koristi za svaki poziv - konstruisanje je relativno skupo
- * (učitavanje ONNX grafa), sam `embed()` poziv je brz.
+ * Local MiniLM (all-MiniLM-L6-v2, 384 dimensions) through langchain4j. The ONNX runtime and the
+ * model weights ship inside the jar: no download, no network call, no API key. The model is loaded
+ * lazily once (expensive) and then reused (each embed() call is fast).
  *
- * Kompromis (videti MOVIELENS_DESIGN_PLAN.md) - MiniLM je mnogo manji model od Gemini-jevog i
- * primarno treniran na engleskom, za razliku od Gemini-ja koji je EKSPLICITNO građen za unakrsnu
- * višejezičnu pretragu. Pretraga na srpskom (upit) protiv engleskih opisa filmova (dokumenti) će
- * ovde raditi primetno lošije nego sa Gemini-jem - to je i poenta ovog poređenja.
+ * Trade-off: MiniLM is much smaller than Gemini's model and trained mostly on English, so Serbian
+ * queries against English overviews work noticeably worse. It is kept for comparison and is only
+ * enabled with ENABLE_LOCAL_EMBEDDING=true (it does not fit in Render's free-tier memory).
  */
 class LocalTextEmbedder : TextEmbedder {
     override val label = "Lokalno (MiniLM)"

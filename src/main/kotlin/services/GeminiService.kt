@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 
+/** Gemini is overloaded or rate-limited (HTTP 429/503); routes answer 503 with a "try again" message. */
 class GeminiOverloadedException(message: String) : Exception(message)
 
 private fun isGeminiOverloadSignal(message: String?): Boolean {
@@ -31,10 +32,14 @@ private fun isGeminiOverloadSignal(message: String?): Boolean {
     return listOf("overloaded", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "rate limit", " 429", " 503")
         .any { text.contains(it, ignoreCase = true) }
 }
+/**
+ * Google Gemini: movie recognition from a photo (poster or film still) and text embeddings for the
+ * semantic search.
+ */
 
 class GeminiService(private val apiKey: String) {
 
-    // Koristimo namenski thread za blokirajuće SDK pozive da ne bismo gušili Ktor
+    // The Gemini SDK call is blocking, so it runs on a dedicated thread instead of Ktor's threads.
     private val sdkDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     private val client = Client.builder()
@@ -54,8 +59,11 @@ class GeminiService(private val apiKey: String) {
     }
 
     /**
-     * Detekcija filma sa slike: ignoriše se korisnički tekst i šalje se strogi uput Gemini‑ju
-     * da vrati isključivo JSON prema definisanoj šemi. Rezultat se parsira u [GeminiMovieCandidatesResponse].
+     * Asks Gemini which movie the image shows. The prompt requires strict JSON in a fixed schema,
+     * which is parsed into [GeminiMovieCandidatesResponse] (up to a few candidates, best first).
+     *
+     * @throws GeminiOverloadedException when Gemini is overloaded or rate-limited.
+     * @throws IllegalStateException on any other SDK error or unparseable output.
      */
     suspend fun detectMoviesFromImage(
         imageBytes: ByteArray,
@@ -130,6 +138,10 @@ class GeminiService(private val apiKey: String) {
     }
 
 
+    /**
+     * Embedding vector for [text] via the Gemini REST API (`gemini-embedding-001`).
+     * [taskType] is RETRIEVAL_DOCUMENT for movie texts and RETRIEVAL_QUERY for search queries.
+     */
     suspend fun embedText(text: String, taskType: String): FloatArray {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return FloatArray(0)
@@ -162,12 +174,12 @@ class GeminiService(private val apiKey: String) {
     private fun sanitizeToJson(raw: String): String {
         var s = raw.trim()
         if (s.startsWith("```")) {
-            // remove markdown fences like ```json ... ```
+            // Remove Markdown code fences such as ```json ... ```.
             s = s.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
             val endIdx = s.lastIndexOf("```")
             if (endIdx >= 0) s = s.substring(0, endIdx).trim()
         }
-        // Heuristics: extract first {...} balanced block
+        // Extract the first balanced {...} block.
         val start = s.indexOf('{')
         if (start == -1) return s
         var depth = 0
@@ -184,6 +196,7 @@ class GeminiService(private val apiKey: String) {
     }
 }
 
+/** Gemini's answer for an image: candidate movies, or `notMovieLike` if the image is not a movie. */
 @Serializable
 data class GeminiMovieCandidatesResponse(
     @SerialName("query_language") val queryLanguage: String? = null,
@@ -192,6 +205,7 @@ data class GeminiMovieCandidatesResponse(
     @SerialName("uncertainty_reason") val uncertaintyReason: String? = null
 )
 
+/** One movie Gemini thinks the image shows (title suitable for a TMDB search). */
 @Serializable
 data class MovieCandidate(
     val title: String,

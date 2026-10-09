@@ -14,7 +14,7 @@ import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.update
 
-/** Dekodira MoviesTable.genres (JSON string, videti napomenu na koloni) - prazna lista ako null/pokvareno. */
+/** Decodes [MoviesTable.genres] (a JSON string); returns an empty list if it is missing or malformed. */
 fun decodeGenres(genresJson: String?): List<TmdbGenre> {
     if (genresJson.isNullOrBlank()) return emptyList()
     return try {
@@ -25,30 +25,29 @@ fun decodeGenres(genresJson: String?): List<TmdbGenre> {
 }
 
 /**
- * Lokalni keš TMDB filmova (Faza 2, MOVIELENS_ROADMAP.md). `user_actions.movie_id` je FK na
- * `movies.tmdb_id`, pa film mora prvo postojati ovde pre nego što se doda u watchlistu/oceni.
+ * Local cache of TMDB movies. A movie must be cached here before it can be added to a list, rated
+ * or commented on, because those tables reference `movies.tmdb_id`.
  */
 class MoviesRepository {
 
-    /** Naslov iz lokalnog keša filmova (null ako film još nije keširan). */
+    /** Title from the local cache, or null if the movie has not been cached yet. */
     suspend fun getTitle(tmdbId: Long): String? = dbQuery {
         MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId }.firstOrNull()?.get(MoviesTable.title)
     }
 
     /**
-     * Osigurava da film sa datim tmdbId postoji u `movies` tabeli - ako ne postoji, povlači
-     * detalje sa TMDB-a i upisuje ih. Ako VEĆ postoji ali mu fali `genres` (film keširan pre Faze
-     * 4, ili ranije nikad nije bio ocenjen/gledan pa je genres ostao null), lenjo se dopunjava
-     * samo ta kolona - vidi napomenu na MoviesTable.genres. Baca [IllegalArgumentException] ako
-     * TMDB ne prepoznaje taj tmdbId (film ne postoji).
+     * Makes sure the movie exists in the `movies` table, fetching it from TMDB if needed.
+     *
+     * If the row exists but `genres` or `vote_average` is missing (rows cached before those columns
+     * were filled), only those columns are backfilled.
+     *
+     * @throws IllegalArgumentException if TMDB does not know this id.
      */
     suspend fun ensureCached(tmdbId: Int, tmdbService: TmdbService) {
         val existingRow = dbQuery {
             MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId.toLong() }.firstOrNull()
         }
-        // Već postoji I ima genres + vote_average popunjene - ništa se ne radi. Ako postoji ali
-        // nešto od toga fali (keširano pre Faze 4 / pre vote_average kolone), nastavljamo dole da
-        // samo dopunimo te kolone.
+        // Nothing to do if the row exists and is complete.
         if (existingRow != null && existingRow[MoviesTable.genres] != null && existingRow[MoviesTable.voteAverage] != null) return
 
         val detail = tmdbService.getMovieDetails(tmdbId)
@@ -58,8 +57,7 @@ class MoviesRepository {
 
         dbQuery {
             if (existingRow == null) {
-                // Ponovna provera unutar transakcije - blaga zaštita od retke trke (dva paralelna
-                // zahteva za isti film istovremeno).
+                // Check again inside the transaction: two concurrent requests may cache the same movie.
                 val stillMissing = MoviesTable.selectAll().where { MoviesTable.tmdbId eq tmdbId.toLong() }.empty()
                 if (stillMissing) {
                     MoviesTable.insert { row ->
@@ -72,7 +70,7 @@ class MoviesRepository {
                         row[voteAverage] = voteAverageValue
                     }
                 } else {
-                    // Neko drugi je upisao red dok smo čekali TMDB - samo dopuni genres ako fali.
+                    // Another request inserted the row while we waited for TMDB - only fill the gaps.
                     MoviesTable.update({ (MoviesTable.tmdbId eq tmdbId.toLong()) and (MoviesTable.genres.isNull()) }) {
                         it[genres] = genresJson
                     }
@@ -81,8 +79,7 @@ class MoviesRepository {
                     }
                 }
             } else {
-                // Red postoji, ali mu je genres i/ili vote_average falio - backfill oba (genresJson
-                // je ionako svež sa TMDB-a, prepisivanje je bezopasno).
+                // The row exists but genres and/or vote_average are missing - backfill both.
                 MoviesTable.update({ MoviesTable.tmdbId eq tmdbId.toLong() }) {
                     it[genres] = genresJson
                     it[voteAverage] = voteAverageValue

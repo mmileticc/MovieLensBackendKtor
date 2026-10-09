@@ -25,13 +25,6 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Javni komentari na film (E2.2 dorada, 3. septembar 2026) - videti CommentsTable.kt za puni
- * kontekst zamene starog `review` polja. Sve rute iza JWT auth-a (isti razlog kao
- * /api/movies/{tmdbId}/friends-watched u MovieRouting.kt - potreban je identitet pozivaoca da bi
- * se znalo koji komentari su "od prijatelja"/već lajkovani/sopstveni, čak i za obično čitanje).
- */
-
 private const val COMMENT_MAX_LENGTH = 1000
 private const val DEFAULT_PAGE_SIZE = 10
 private const val MAX_PAGE_SIZE = 50
@@ -77,6 +70,11 @@ private fun CommentRow.toDto() = CommentDto(
     isOwn = isOwn
 )
 
+/**
+ * Movie comments: public reading (`GET /api/movies/{tmdbId}/comments`, optional sign-in for the
+ * own/friend/liked markers), and for signed-in users posting, deleting own comments and toggling
+ * likes (the comment author gets a push notification for a new like).
+ */
 fun Application.configureCommentsRouting(
     tmdbService: TmdbService,
     commentsRepository: CommentsRepository,
@@ -86,8 +84,8 @@ fun Application.configureCommentsRouting(
     pushService: PushService
 ) {
     routing {
-        // Čitanje komentara je javno (gost vidi komentare kao i ostatak detalja filma); sa tokenom
-        // se dodatno označavaju sopstveni komentari, komentari prijatelja i lajkovi.
+        // Reading is public (guests see comments like the rest of the movie detail); with a token
+        // the user's own comments, friends' comments and likes are marked.
         rateLimit(RATE_LIMIT_PUBLIC) {
             authenticate("auth-jwt", optional = true) {
                 get("/api/movies/{tmdbId}/comments") {
@@ -166,7 +164,7 @@ fun Application.configureCommentsRouting(
                     try {
                         val result = commentsRepository.toggleLike(commentId, callerId)
                         call.respond(LikeResponseDto(result.liked, result.likeCount))
-                        // Samo novi lajk (ne i uklanjanje); sopstveni komentar se ne može lajkovati.
+                        // Only a new like (not removing one); liking one's own comment is not allowed.
                         if (result.liked) {
                             val name = userDao.findById(callerId)?.username ?: "Korisnik"
                             val title = moviesRepository.getTitle(result.movieId)

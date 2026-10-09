@@ -11,6 +11,7 @@ import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
 
+/** A comment joined with its author, plus like/friend/own flags relative to the requesting user. */
 data class CommentRow(
     val id: Int,
     val userId: String,
@@ -25,18 +26,16 @@ data class CommentRow(
     val isOwn: Boolean
 )
 
+/** One page of comments and whether more exist. */
 data class CommentsPage(val rows: List<CommentRow>, val hasMore: Boolean)
 
+/** Result of a like toggle; owner and movie are returned so the route can notify the author. */
 data class LikeToggleResult(val liked: Boolean, val likeCount: Int, val commentOwnerId: String, val movieId: Long)
 
-/**
- * DAO za javne komentare na film (E2.2 dorada, 3. septembar 2026 - videti CommentsTable.kt za
- * kontekst zamene starog `review` polja). Potpuno odvojeno od `UserActionsRepository` - komentar
- * ne zavisi od watched/rating statusa.
- */
+/** Reads and writes movie comments and their likes ([CommentsTable], [CommentLikesTable]). */
 class CommentsRepository {
 
-    /** Dodaje novi komentar, vraća njegov generisani id. */
+    /** Adds a new comment and returns its generated id. */
     suspend fun add(userId: String, movieId: Long, body: String): Int = dbQuery {
         CommentsTable.insert { row ->
             row[CommentsTable.userId] = userId
@@ -46,9 +45,9 @@ class CommentsRepository {
     }
 
     /**
-     * Briše komentar SAMO ako je `userId` njegov autor (vraća false inače - poziva se sa
-     * generičkom 403 porukom na ruti, bez otkrivanja da li komentar uopšte postoji). Prvo briše
-     * njegove lajkove (FK ka CommentsTable.id) pa sam komentar.
+     * Deletes the comment only if [userId] is its author (returns false otherwise, so the route can
+     * answer 403 without revealing whether the comment exists). Likes are deleted first because
+     * they reference the comment.
      */
     suspend fun delete(commentId: Int, userId: String): Boolean = dbQuery {
         val owns = CommentsTable.selectAll().where {
@@ -62,13 +61,12 @@ class CommentsRepository {
     }
 
     /**
-     * Lista komentara za film, paginirano. Sortiranje: PRVO komentari prijatelja (`friendIds`),
-     * pa svi ostali - unutar svake grupe najnoviji prvi. Namerno urađeno u Kotlin-u umesto SQL
-     * CASE ORDER BY izraza (Exposed 0.41.1 API za to je nezgrapan/verzija-osetljiv) - dohvata SVE
-     * komentare za taj film iz baze (bez server-side WHERE granice po broju), pa se stabilno
-     * sortira i tek onda paginira u memoriji. Prihvatljivo za realan obim ovog projekta (desetine/
-     * stotine komentara po filmu, ne milioni) - ako obim ikad naraste, ovo je prvo mesto za
-     * optimizaciju (prava SQL ORDER BY sa CASE izrazom).
+     * A page of the movie's comments: friends' comments first, then everyone else, newest first
+     * within each group. [requestingUserId] is null for guests (no own/liked markers).
+     *
+     * Sorting and paging happen in memory after loading all comments of the movie. That is fine for
+     * tens or hundreds of comments per movie; with much larger volumes this should become a SQL
+     * ORDER BY with a CASE expression.
      */
     suspend fun getForMovie(
         movieId: Long,
@@ -101,8 +99,7 @@ class CommentsRepository {
                 }
         }
 
-        // sortedByDescending je stabilan sort - unutar iste grupe (prijatelj/nije) ostaje
-        // redosled iz ORDER BY createdAt DESC iznad.
+        // sortedByDescending is stable: within each group the createdAt DESC order from SQL is kept.
         val sorted = allRows.sortedByDescending { it.isFriend }
         val page = sorted.drop(offset).take(limit)
         if (page.isEmpty()) return CommentsPage(emptyList(), hasMore = false)
@@ -122,8 +119,10 @@ class CommentsRepository {
     }
 
     /**
-     * Lajkuje/skida lajk (toggle) - baca [IllegalArgumentException] ako komentar ne postoji ili
-     * ako korisnik pokušava da lajkuje sopstveni komentar (korisnički zahtev - ne sme).
+     * Likes the comment, or removes the like if it already exists.
+     *
+     * @throws IllegalArgumentException if the comment does not exist or the user tries to like
+     *   their own comment.
      */
     suspend fun toggleLike(commentId: Int, userId: String): LikeToggleResult = dbQuery {
         val commentRow = CommentsTable.selectAll().where { CommentsTable.id eq commentId }.firstOrNull()

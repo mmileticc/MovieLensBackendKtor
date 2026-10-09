@@ -35,9 +35,11 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("Routing")
 
+/** Not used by any route (left over from the first prototype). */
 @Serializable
 data class ChatRequest(val message: String)
 
+/** A TMDB search result for a recognized movie, with the cinemas currently showing it. */
 @Serializable
 data class TmdbMatch(
     val id: Int?,
@@ -48,16 +50,17 @@ data class TmdbMatch(
     val posterPath: String? = null,
     val popularity: Double? = null,
     val voteAverage: Double? = null,
-    // MODIFIKACIJA: Dodata lista bioskopa koja se vraća frontu
     val cinemaShowtimes: List<ScrapedMovie> = emptyList()
 )
 
+/** One Gemini candidate with its TMDB matches. */
 @Serializable
 data class CandidateResolution(
     val candidate: MovieCandidate,
     val matches: List<TmdbMatch>
 )
 
+/** Response of `POST /chat/vision`. */
 @Serializable
 data class VisionSearchResponse(
     val notMovieLike: Boolean,
@@ -66,22 +69,25 @@ data class VisionSearchResponse(
     val resolutions: List<CandidateResolution>
 )
 
+/**
+ * Sign-in (`POST /api/auth/firebase`: Firebase ID token -> backend session JWT) and image
+ * recognition (`POST /chat/vision`: photo -> Gemini candidates -> TMDB matches + cinemas).
+ */
 fun Application.configureRouting(
     geminiService: GeminiService,
     tmdbService: TmdbService,
-    repository: ScrapedMoviesRepository, // PROMENA: Primamo repozitorijum
+    repository: ScrapedMoviesRepository,
     userDao: UserDao,
     jwtSigningKey: String
 ) {
     routing {
         get("/") { call.respondText("OK") }
 
-        // =================== FIREBASE AUTHENTICATION ===================
+        // ===== Sign-in: Firebase ID token -> backend JWT =====
         post("/api/auth/firebase") {
             try {
                 val req = call.receive<AuthFirebaseRequest>()
 
-                // Verify Firebase ID token
                 val decoded = FirebaseAuth.getInstance().verifyIdToken(req.idToken)
                 val uid = decoded.uid
                 val email = decoded.claims["email"]?.toString()
@@ -90,10 +96,9 @@ fun Application.configureRouting(
 
                 logger.info("[AUTH] Verified Firebase token for UID: $uid")
 
-                // Upsert user u DB
                 val user = userDao.upsertByFirebaseUid(uid, email, name, picture)
 
-                // Issue backend JWT token (24h expiry)
+                // Backend session JWT, valid for 24 hours.
                 val token = JWT.create()
                     .withIssuer(JWT_ISSUER)
                     .withAudience(JWT_AUDIENCE)
@@ -118,20 +123,20 @@ fun Application.configureRouting(
                 logger.warn("[AUTH] Firebase verification failed: ${e.message}")
                 call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
             } catch (e: IllegalArgumentException) {
-                // Prazan ili neispravno formiran idToken.
+                // Empty or malformed idToken.
                 logger.info("[AUTH] Invalid token format: ${e.message}")
                 call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid token"))
             } catch (e: BadRequestException) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("Neispravan zahtev"))
             } catch (e: Exception) {
-                // Pad baze, Firebase nije inicijalizovan i sl. - nije problem sa tokenom, pa ne
-                // vraćamo 401 (klijent bi pogrešno zaključio da korisnik mora ponovo da se prijavi).
+                // Database down, Firebase not initialized etc. - not a token problem, so no 401
+                // (the app would wrongly conclude that the user has to sign in again).
                 logger.error("[AUTH] Unexpected error: ${e.message}", e)
                 call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Prijava trenutno nije moguća, pokušaj ponovo"))
             }
         }
 
-        // =================== PROTECTED ENDPOINTS ===================
+        // ===== Protected endpoints =====
         authenticate("auth-jwt") {
             rateLimit(RATE_LIMIT_VISION) {
                 post("/chat/vision") {
@@ -148,7 +153,7 @@ fun Application.configureRouting(
                             }
                             is PartData.FileItem -> {
                                 if (part.name == "image") {
-                                    // Čita najviše limit+1 bajt - veći fajl se odbija bez učitavanja celog u memoriju.
+                                // Read at most limit + 1 bytes, so a larger file is rejected without loading it all.
                                     val bytes = part.streamProvider().use { it.readNBytes(MAX_IMAGE_BYTES + 1) }
                                     if (bytes.size > MAX_IMAGE_BYTES) tooLarge = true else imageBytes = bytes
                                 }
@@ -166,7 +171,7 @@ fun Application.configureRouting(
                     }
 
                     val size = imageBytes.size
-                    // Tip se određuje iz sadržaja fajla, ne iz Content-Type zaglavlja koje klijent bira sam.
+                    // Detect the type from the file content, not from the Content-Type header the client chose.
                     val imageMime = detectImageMime(imageBytes)
                         ?: return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Nepodržan format slike - koristi JPEG ili PNG"))
 
@@ -182,7 +187,7 @@ fun Application.configureRouting(
                             emptyList<ScrapedMovie>()
                         }
 
-                        // 1) Detekcija kandidata sa timeoutom preko Gemini-ja
+                        // 1) Gemini detects candidate movies (with a timeout).
                         val (detected, tGeminiMs) = try {
                             val start = System.currentTimeMillis()
                             val detected = withTimeout(25_000) {
@@ -196,7 +201,7 @@ fun Application.configureRouting(
                         val candidatesTop3 = detected.candidates.take(3)
                         logger.info("Gemini done in ${tGeminiMs}ms | candidates=${detected.candidates.size}")
                         logger.info("Detected candidates: ${detected.candidates.joinToString { it.title }}")
-                        // 2) TMDB pretrage u paraleli (do 3 kandidata)
+                        // 2) TMDB searches in parallel (up to 3 candidates).
                         val t3 = System.currentTimeMillis()
                         val resolutions = coroutineScope {
                             candidatesTop3.map { cand ->
@@ -206,7 +211,6 @@ fun Application.configureRouting(
                                         tmdbService.searchMovies(cand.title)
                                             .take(5)
                                             .map { tmdbMovie ->
-                                                // PROMENA: Prosleđujemo svežu listu filmova povučenu iz Supabase baze
                                                 val pronadjeniBioskopi = proveriDostupnostUBioskopimaPoPrioritetu(
                                                     tmdbId = tmdbMovie.id,
                                                     privremenaBazaFilmova = filmoviIzBaze
@@ -265,7 +269,7 @@ fun Application.configureRouting(
 
 private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-/** JPEG ili PNG po potpisu (magic bytes) na početku fajla; null za sve ostalo. */
+/** JPEG or PNG by the signature (magic bytes) at the start of the file; null for anything else. */
 internal fun detectImageMime(bytes: ByteArray): String? {
     fun startsWith(vararg sig: Int) = bytes.size >= sig.size && sig.indices.all { bytes[it] == sig[it].toByte() }
     return when {

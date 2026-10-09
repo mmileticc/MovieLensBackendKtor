@@ -14,8 +14,9 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.upsert
 
 /**
- * FCM registracioni tokeni uređaja. Jedan korisnik može imati više uređaja; token je jedinstven
- * (isti uređaj posle prijave drugim nalogom prelazi na novog korisnika).
+ * FCM registration tokens of the users' devices. A user can have several devices. The token is
+ * the primary key, so when another account signs in on the same device the token simply moves to
+ * the new user.
  */
 object DeviceTokensTable : Table("device_tokens") {
     val token = varchar("token", 512)
@@ -29,8 +30,10 @@ object DeviceTokensTable : Table("device_tokens") {
     }
 }
 
+/** Reads and writes [DeviceTokensTable]. */
 class DeviceTokensRepository {
 
+    /** Links the device token to the user (insert or move from a previous account). */
     suspend fun register(userId: String, token: String): Unit = dbQuery {
         DeviceTokensTable.upsert {
             it[DeviceTokensTable.token] = token
@@ -39,16 +42,17 @@ class DeviceTokensRepository {
         }
     }
 
-    /** Odjava: briše token samo ako pripada ovom korisniku. */
+    /** Sign-out: removes the token, but only if it still belongs to this user. */
     suspend fun unregister(userId: String, token: String): Unit = dbQuery {
         DeviceTokensTable.deleteWhere { (DeviceTokensTable.token eq token) and (DeviceTokensTable.userId eq userId) }
     }
 
+    /** All device tokens registered for the user. */
     suspend fun tokensFor(userId: String): List<String> = dbQuery {
         DeviceTokensTable.selectAll().where { DeviceTokensTable.userId eq userId }.map { it[DeviceTokensTable.token] }
     }
 
-    /** Tokeni koje je FCM odbio kao nevažeće (aplikacija obrisana, token istekao). */
+    /** Removes tokens FCM reported as invalid (app uninstalled, token expired). */
     suspend fun deleteTokens(tokens: List<String>): Unit = dbQuery {
         if (tokens.isNotEmpty()) DeviceTokensTable.deleteWhere { DeviceTokensTable.token inList tokens }
     }

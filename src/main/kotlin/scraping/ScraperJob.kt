@@ -30,9 +30,8 @@ import kotlin.system.exitProcess
 private val logger = LoggerFactory.getLogger("ScraperJob")
 
 /**
- * Jedan zajednički spisak aktivnih skrepera - koristi ga i Application.kt
- * (configureScrapingLifecycle, kad je SCRAPING_BOOLEAN=true) i ovaj samostalni job, da se novi
- * bioskop dodaje na jednom mestu.
+ * The single list of active scrapers, used by this job and by Application.configureScrapingLifecycle
+ * (SCRAPING_BOOLEAN=true), so a new cinema is added in one place.
  */
 fun sviAktivniScraperi(): List<CinemaScraper> = listOf(
     MtsDvoranaScraper(),
@@ -45,22 +44,18 @@ fun sviAktivniScraperi(): List<CinemaScraper> = listOf(
 )
 
 /**
- * Samostalni dnevni scraping job (bez Ktor servera) - pokreće ga GitHub Actions jednom dnevno
- * (.github/workflows/daily-scrape.yml), jer Render free plan ne može da izdrži Playwright.
+ * Standalone daily scraping job (no Ktor server), run once a day by GitHub Actions
+ * (.github/workflows/daily-scrape.yml) because Render's free plan cannot run Playwright.
  *
- * Tok: svi skreperi paralelno -> TMDB ID enrichment -> per-bioskop zamena u `scraped_movies`
- * (ScrapedMoviesRepository.insertScrapedMovies) -> izlaz. Uvek skrejpuje (nema provere "da li je
- * već danas skrejpovano" kao u configureScrapingLifecycle) - job se pokreće namerno.
+ * Flow: all scrapers in parallel -> TMDB id matching -> per-cinema replacement in `scraped_movies`
+ * -> "watchlist movie now in cinemas" notifications -> report. The Render backend notices new data
+ * by itself (configureSemanticIndexRefresh), so the job does not have to wake it.
  *
- * Render backend sam primećuje nove podatke (configureSemanticIndexRefresh periodično proverava
- * najnoviji created_at i osvežava semantički indeks), pa ovaj job ne mora da ga "budi".
+ * Exit code 1 if ANY cinema returned 0 movies (after the others were stored), so the run turns red
+ * and an e-mail arrives as soon as a site changes its layout.
  *
- * Izlazni kod je 1 ako je BILO KOJI bioskop vratio 0 filmova (posle upisa ostalih u bazu) - tako
- * GitHub Actions run postane crven i pošalje mejl čim neki sajt promeni strukturu, umesto da se
- * to primeti tek kad u aplikaciji nestane repertoar.
- *
- * Potrebne ENV promenljive: DB_HOST, DB_PASSWORD (+ opciono DB_PORT/DB_NAME/DB_USER), TMDB_API_KEY.
- * Pokretanje lokalno: ./gradlew runScraperJob
+ * Environment: DB_HOST, DB_PASSWORD (+ optional DB_PORT/DB_NAME/DB_USER), TMDB_API_KEY, optional
+ * FIREBASE_SERVICE_ACCOUNT_JSON and SKIP_IF_FRESH. Local run: ./gradlew runScraperJob
  */
 suspend fun main() {
     System.setOut(PrintStream(System.out, true, "UTF-8"))
@@ -73,7 +68,7 @@ suspend fun main() {
         writeReport("## ❌ Scraping nije ni završen\n\nFatalna greška: `${e.message}`\n\nDetalji su u logu run-a.\n")
         2
     }
-    // exitProcess umesto prirodnog kraja main-a - Playwright/Ktor client niti umeju da drže JVM živim.
+    // exitProcess instead of returning from main: Playwright/Ktor client threads can keep the JVM alive.
     exitProcess(exitCode)
 }
 
@@ -87,8 +82,8 @@ private suspend fun runScraperJob(): Int {
 
     val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
 
-    // Rezervni zakazani run (videti daily-scrape.yml) - GitHub ume da ODBACI zakazan run pri gužvi,
-    // pa postoji drugi, kasniji termin koji radi samo ako glavni danas nije uspeo da upiše ništa.
+    // Backup scheduled runs (see daily-scrape.yml): GitHub sometimes drops scheduled runs when busy,
+    // so later triggers only scrape if nothing was stored today yet.
     if (System.getenv("SKIP_IF_FRESH").equals("true", ignoreCase = true)) {
         val poslednjiScrape = repository.getLatestScrapeDate()
         if (poslednjiScrape == danasnjiDatum) {
@@ -107,8 +102,8 @@ private suspend fun runScraperJob(): Int {
     val saIdjem = obogaceniFilmovi.count { it.tmdbId != null }
     logger.info("[ScraperJob] TMDB ID pronađen za $saIdjem od ${obogaceniFilmovi.size}")
 
-    // insertScrapedMovies sam preskače brisanje ako je lista prazna, i menja samo bioskope koji
-    // su nešto vratili - bioskop koji je pao zadržava jučerašnje redove.
+    // insertScrapedMovies skips empty input and replaces only cinemas that returned movies - a
+    // cinema whose site failed keeps yesterday's rows.
     repository.insertScrapedMovies(obogaceniFilmovi)
 
     val poBioskopu = scraperi.associate { scraper ->
@@ -125,7 +120,7 @@ private suspend fun runScraperJob(): Int {
     try {
         notifyWatchlistMoviesInCinemas(obogaceniFilmovi)
     } catch (e: Exception) {
-        // Obaveštenja nisu deo samog scraping-a - greška ne sme da obori job.
+        // Notifications are not part of scraping itself - a failure must not fail the job.
         logger.warn("[ScraperJob] Obaveštenja o filmovima sa liste nisu poslata: ${e.message}")
     }
 
@@ -138,14 +133,14 @@ private suspend fun runScraperJob(): Int {
     }
 }
 
-// Najviše ovoliko obaveštenja "film sa liste je u bioskopu" po korisniku u jednom run-u - prvi run
-// posle uvođenja bi inače poslao po jedno za svaki film sa liste koji već igra.
+// At most this many "movie from your watchlist is now in cinemas" notifications per user and run;
+// otherwise the first run would send one for every watchlist movie that is already playing.
 private const val MAX_CINEMA_NOTIFICATIONS_PER_USER = 3
 
 /**
- * Korisnicima šalje obaveštenje kad film sa njihove liste za gledanje počne da igra (ne "uskoro").
- * Svaki film se javlja jednom po korisniku (dedupe u notifications tabeli). Preskače se ako
- * FIREBASE_SERVICE_ACCOUNT_JSON nije postavljen u CI-ju.
+ * Notifies users when a movie on their watchlist starts playing (not "coming soon"). Each movie is
+ * announced once per user (dedupe in the notifications table). Skipped when
+ * FIREBASE_SERVICE_ACCOUNT_JSON is not set in CI.
  */
 private suspend fun notifyWatchlistMoviesInCinemas(filmovi: List<ScrapedMovie>) {
     if (System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON").isNullOrBlank()) {
@@ -179,7 +174,7 @@ private suspend fun notifyWatchlistMoviesInCinemas(filmovi: List<ScrapedMovie>) 
     logger.info("[ScraperJob] Obaveštenja \"film sa liste je u bioskopu\": poslato $sent.")
 }
 
-/** Izlaz koraka za workflow (npr. `skipped=true` da se ne šalje mejl) - GITHUB_OUTPUT postoji samo u CI-ju. */
+/** Step output for the workflow (e.g. `skipped=true` so no e-mail is sent); GITHUB_OUTPUT exists only in CI. */
 private fun writeGithubOutput(kljuc: String, vrednost: String) {
     val putanja = System.getenv("GITHUB_OUTPUT")?.takeIf { it.isNotBlank() } ?: return
     try {
@@ -190,9 +185,9 @@ private fun writeGithubOutput(kljuc: String, vrednost: String) {
 }
 
 /**
- * Markdown izveštaj ide na dva mesta (oba postoje samo kad su ENV promenljive postavljene, tj. u CI-ju):
- * - GITHUB_STEP_SUMMARY - "Summary" tab run-a na GitHub-u
- * - SCRAPE_REPORT_FILE - fajl koji workflow šalje kao telo mejla posle svakog run-a
+ * The Markdown report goes to two places (each only when its environment variable is set, i.e. in CI):
+ * - GITHUB_STEP_SUMMARY - the run's "Summary" tab on GitHub
+ * - SCRAPE_REPORT_FILE - the file the workflow sends as the e-mail body after every run
  */
 private fun writeReport(tekst: String) {
     listOf("GITHUB_STEP_SUMMARY", "SCRAPE_REPORT_FILE").forEach { envIme ->

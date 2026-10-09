@@ -7,28 +7,17 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 
 /**
- * Lokalni keš TMDB podataka o filmovima. Postoji u Supabase-u već pre nego što je ova Kotlin
- * definicija napisana; ovo je usklađivanje koda sa stvarnom šemom (videti MOVIELENS_ROADMAP.md).
+ * Local cache of TMDB movie data.
  *
- * `user_actions.movie_id` je FK na `movies.tmdb_id`, što znači da film mora prvo postojati ovde
- * (upsert-on-first-interaction) pre nego što se doda u watchlistu ili oceni — puna implementacija
- * upsert logike dolazi u Fazi 1/2 zajedno sa /api/movies i /api/users/{id}/watchlist rutama.
+ * `user_actions.movie_id` and `movie_comments.movie_id` are foreign keys to `movies.tmdb_id`, so a
+ * movie must be cached here before it can be added to a list, rated or commented on
+ * (see [MoviesRepository.ensureCached]).
  *
- * NAPOMENE o pojednostavljenjima u odnosu na stvarnu DB šemu:
- * - `genres` je u bazi ORIGINALNO bio Postgres ARRAY (text[]); Exposed 0.41.1 bez dodatnog modula
- *   nema prirodnu podršku za array kolone. Za Fazu 4 (taste profile po žanru, MOVIELENS_ROADMAP.md)
- *   je ipak zatrebalo da se čuva, pa je kolona migrirana na obični `text` koji čuva JSON string
- *   (`[{"id":28,"name":"Action"}, ...]`, videti TmdbGenre u TmdbService.kt) - ista strategija kao
- *   `roles` na UsersTable. POTREBNA JEDNOKRATNA SQL MIGRACIJA pre nego što se ovo pokrene:
- *   `ALTER TABLE public.movies ALTER COLUMN genres TYPE text USING NULL;` (postojeći text[]
- *   podaci se ionako nikad nisu ni pisali - MoviesRepository ih je ranije uvek odbacivao, videti
- *   git istoriju - pa je bezbedno da se pri migraciji sve postavi na NULL i popuni lenjo/backfill
- *   pri sledećem ensureCached pozivu za svaki film, videti MoviesRepository.kt).
- * - `last_updated` je u bazi `timestamp with time zone`; mapirano ovde kao naivan `datetime()`
- *   (isti pristup kao za ostale timestamp kolone u projektu) jer trenutne zavisnosti
- *   (exposed-kotlin-datetime) ne podržavaju direktno timestamptz bez exposed-java-time modula.
- *   Funkcionalno bezopasno za jednoregionalnu aplikaciju, ali vredi revidirati ako se doda
- *   pravi timezone-aware zahtev.
+ * - `genres` is a JSON string (`[{"id":28,"name":"Action"}, ...]`, see `TmdbGenre`) rather than a
+ *   Postgres array, because Exposed has no built-in array column type. Genres drive the taste
+ *   profile and recommendations.
+ * - `last_updated` is `timestamptz` in the database but mapped as a naive UTC `datetime()`, like
+ *   every other timestamp in this project.
  */
 object MoviesTable : Table("movies") {
     val tmdbId = long("tmdb_id")
@@ -36,12 +25,10 @@ object MoviesTable : Table("movies") {
     val posterUrl = text("poster_url").nullable()
     val releaseYear = integer("release_year").nullable()
     val popularityScore = double("popularity_score").nullable()
-    // JSON string (List<TmdbGenre>) - videti napomenu iznad. Null = još nije popunjeno (film
-    // keširan pre ove izmene, ili prvi upis pao pre TMDB detalja) - lenjo se popunjava u
-    // MoviesRepository.ensureCached pri sledećoj interakciji sa tim filmom.
+    // JSON list of TmdbGenre. Null for rows cached before genres were stored; filled in lazily by
+    // MoviesRepository.ensureCached the next time someone interacts with the movie.
     val genres = text("genres").nullable()
-    // TMDB prosečna ocena (UX dorada oktobar 2026 - filter/sortiranje Biblioteke po TMDB oceni).
-    // Null za filmove keširane pre ove kolone - lenjo se popunjava u ensureCached, isto kao genres.
+    // TMDB average rating, used to sort the Library. Filled in lazily like `genres`.
     val voteAverage = double("vote_average").nullable()
     val lastUpdated = datetime("last_updated").nullable().clientDefault {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)

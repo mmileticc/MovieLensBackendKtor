@@ -12,6 +12,10 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("ArenaCineplexScraper")
 
 
+/**
+ * Arena Cineplex (Novi Sad), arenacineplex.com: server-rendered pages, read with Jsoup.
+ * Programme of a day: `/repertoar/YYYY-MM-DD`; coming soon: `/uskoro`. One fixed location.
+ */
 class ArenaCineplexScraper : CinemaScraper {
     override val cinemaName = "Arena Cineplex"
     private val baseUrl = "http://www.arenacineplex.com"
@@ -29,7 +33,7 @@ class ArenaCineplexScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/repertoar/${date.format(formatter)}"
         val urlUskoro = "$baseUrl/uskoro"
 
-        // 1. Skrapovanje trenutnog repertoara (isUpcoming = false)
+        // 1. Current programme (isUpcoming = false)
         try {
             val docRepertoar = Jsoup.connect(urlRepertoar)
                 .userAgent(mojUserAgent)
@@ -41,7 +45,7 @@ class ArenaCineplexScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju repertoara: ${e.message}")
         }
 
-        // 2. Skrapovanje sekcije "Uskoro" (isUpcoming = true)
+        // 2. "Coming soon" section (isUpcoming = true)
         try {
             val docUskoro = Jsoup.connect(urlUskoro)
                 .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -53,11 +57,10 @@ class ArenaCineplexScraper : CinemaScraper {
             logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
         }
 
-        // 3. Interna deduplikacija unutar ovog bioskopa
-        // Prvo ubacujemo tekuće filmove jer oni imaju prioritet (isUpcoming = false)
+        // 3. De-duplicate within this cinema: movies already in the programme take priority.
         val filtriranaMapa = tekuciFilmovi.associateBy { it.originalTitle ?: it.title }.toMutableMap()
 
-        // Dodajemo upcoming filmove SAMO ako već ne postoje na repertoaru za taj dan
+        // Add a coming-soon movie only if it is not already in today's programme.
         for (upcomingIno in upcomingFilmovi) {
             val key = upcomingIno.originalTitle ?: upcomingIno.title
             if (!filtriranaMapa.containsKey(key)) {
@@ -67,7 +70,6 @@ class ArenaCineplexScraper : CinemaScraper {
             }
         }
 
-        // Vraćamo čistu listu za ovaj bioskop
         return filtriranaMapa.values.toList()
     }
 

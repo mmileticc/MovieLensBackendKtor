@@ -8,34 +8,23 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.kotlin.datetime.datetime
 
 /**
- * Watchlist + "odgledano"/ocena, objedinjeno u jednu tabelu (jedan red po korisniku+filmu+tipu
- * akcije). Postoji već u Supabase-u; ovo je usklađivanje koda sa stvarnom šemom.
+ * A user's watchlist and watched movies in one table: one row per (user, movie, action type).
  *
- * DOGOVORENA IZMENA (u odnosu na originalnu produkcionu šemu koju je korisnik podelio):
- * - `action_type` je originalno dozvoljavao samo 'WATCHLIST' i 'RATED', što je značilo da se film
- *   nije mogao označiti kao odgledan bez ocene. Po dogovoru, spojeno je u jedno 'WATCHED' stanje:
- *   isti red pokriva "odgledano bez ocene" (rating = null) i "odgledano i ocenjeno" (rating != null).
- *   Ocena se može dodati/izmeniti na istom redu u bilo kom trenutku.
- * - Skala ocene promenjena sa 1-5 na 1-10 (IMDb/TMDB stil).
+ * - `WATCHLIST`: the movie is saved to watch later.
+ * - `WATCHED`: the movie was watched. `rating` (1-10) is optional, so the same row covers both
+ *   "watched" and "watched and rated", and the rating can be added or changed at any time.
  *
- * VAŽNO: pošto `user_actions` tabela već postoji u produkciji sa starim CHECK constraint-ima
- * ('WATCHLIST'/'RATED', rating 1-5), Exposed-ov createMissingTablesAndColumns NE menja postojeće
- * constraint-e (samo dodaje ono što nedostaje). Za postojeću bazu je potrebno jednom ručno
- * pokrenuti migraciju iz MOVIELENS_ROADMAP.md / poruke uz ovu izmenu. Check blok ispod je i dalje
- * koristan jer se primenjuje ako se tabela ikad kreira iznova (npr. nov Supabase projekat).
- *
- * `created_at` (timestamptz u bazi) mapiran kao naivan `datetime()` — ista napomena kao u
- * MoviesTable.kt.
+ * The CHECK constraints below only apply when the table is created from scratch;
+ * `createMissingTablesAndColumns` never alters constraints on an existing table.
+ * `created_at` is `timestamptz` in the database, mapped as a naive UTC `datetime()`.
  */
 object UserActionsTable : Table("user_actions") {
     val userId = varchar("user_id", 64) references UsersTable.id
     val movieId = long("movie_id") references MoviesTable.tmdbId
     val actionType = varchar("action_type", 20)
     val rating = integer("rating").nullable()
-    // Faza "komentar uz ocenu" (16. avgust 2026) - kratak tekstualni utisak uz WATCHED ocenu,
-    // opcion, nezavisan od rating-a (može postojati i bez ocene). Nova kolona na tabeli koja već
-    // postoji u produkciji - Exposed-ov createMissingTablesAndColumns je dodaje bez ručne migracije
-    // (nullable, bez CHECK constraint-a, isto kao bio na UsersTable).
+    // Optional short note attached to a WATCHED row. Still returned by the API, but the app now
+    // uses public comments (CommentsTable) instead and no longer writes it.
     val review = text("review").nullable()
     val createdAt = datetime("created_at").nullable().clientDefault {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)

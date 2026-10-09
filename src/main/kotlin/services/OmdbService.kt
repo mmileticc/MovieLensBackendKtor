@@ -18,19 +18,14 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("OmdbService")
 
 /**
- * OMDb (omdbapi.com) - dopunski, opcioni izvor IMDb i Rotten Tomatoes ocena za Movie Detail
- * ekran (dorada, 3. septembar 2026 - TMDB ocena je već prikazana, ovo je dopuna, ne zamena).
- * TMDB ne vraća RT ocenu uopšte, a njihova IMDb ocena je zapravo TMDB-ova sopstvena, ne prava
- * IMDb ocena - otud posebna, dodatna integracija.
+ * Optional source of IMDb and Rotten Tomatoes ratings for the movie detail screen. TMDB returns no
+ * Rotten Tomatoes score, and its "IMDb" rating is really TMDB's own.
  *
- * NAMERNO opciono: [apiKey] može biti null (npr. OMDB_API_KEY nije postavljen na Render-u) - u
- * tom slučaju [getRatings] uvek vraća null bez ijednog mrežnog poziva, umesto da baci grešku i
- * obori ceo /api/movies/{tmdbId} odgovor. Movie Detail i dalje radi normalno, samo bez ove dve
- * dodatne ocene (isti princip kao showtimes koji nedostaju kad skreping ne pokrije dati film).
+ * Optional on purpose: when [apiKey] is null (OMDB_API_KEY not set), [getRatings] always returns
+ * null without any network call, and the movie detail simply shows no extra ratings.
  *
- * Besplatan OMDb tier je ograničen na 1000 poziva/dan po ključu - TtlCache sa dugim TTL-om (RT/
- * IMDb ocene filma se menjaju retko, za razliku od TMDB popularity/vote_count) drži broj poziva
- * nisko čak i uz veći saobraćaj.
+ * The free OMDb tier allows 1000 requests per day; ratings change rarely, so a long-lived cache
+ * keeps the number of calls low.
  */
 class OmdbService(private val apiKey: String?) {
 
@@ -48,8 +43,8 @@ class OmdbService(private val apiKey: String?) {
     }
 
     /**
-     * [imdbId] dolazi iz TMDB /movie/{id} odgovora (polje imdb_id, već uključeno u osnovni
-     * odgovor bez posebnog append_to_response) - videti TmdbMovieDetail.imdbId.
+     * IMDb and Rotten Tomatoes ratings for [imdbId] (from TMDB's `imdb_id`), or null if unknown,
+     * not configured, or OMDb failed. Never throws.
      */
     suspend fun getRatings(imdbId: String?): OmdbRatings? {
         if (apiKey.isNullOrBlank() || imdbId.isNullOrBlank()) return null
@@ -68,8 +63,8 @@ class OmdbService(private val apiKey: String?) {
             } else {
                 val dto: OmdbResponseDto = response.body()
                 if (dto.response == "False") {
-                    // OMDb vraća 200 OK sa response="False" i Error poljem za nepoznat imdbId,
-                    // umesto HTTP status koda - ovo NIJE mrežna greška, samo nema podataka.
+                    // OMDb answers 200 OK with response="False" for an unknown id - not an error,
+                    // just no data.
                     null
                 } else {
                     val rottenTomatoes = dto.ratings
@@ -86,16 +81,17 @@ class OmdbService(private val apiKey: String?) {
             null
         }
 
-        // Kešira se i null rezultat (film bez RT/IMDb podataka na OMDb-u ostaje bez njih), da
-        // se isti tmdbId/imdbId ne gađa iznova pri svakom otvaranju iste stranice filma.
+        // Null results are cached too, so a movie without OMDb data is not requested again on
+        // every visit to its page.
         ratingsCache.put(imdbId, ratings)
         return ratings
     }
 }
 
+/** Extra ratings from OMDb; each one can be missing. */
 data class OmdbRatings(
     val imdbRating: Double?,
-    /** Npr. "87%" - OMDb ovo vraća kao gotov string, ne kao broj. */
+    /** E.g. "87%" - OMDb returns a ready-made string, not a number. */
     val rottenTomatoesPercent: String?
 )
 

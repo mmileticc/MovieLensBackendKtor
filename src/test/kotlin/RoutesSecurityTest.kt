@@ -32,9 +32,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Provere pristupa i validacije koje se dešavaju PRE bilo kakvog poziva baze ili spoljnog servisa,
- * pa se testiraju bez Supabase-a, TMDB-a i Gemini-ja (repozitorijumi/servisi se prave, ali se ne
- * pozivaju).
+ * Access and validation checks that happen BEFORE any database or external service call, so they
+ * are tested without Supabase, TMDB and Gemini (repositories and services are created, but never
+ * called).
  */
 class RoutesSecurityTest {
 
@@ -61,7 +61,7 @@ class RoutesSecurityTest {
     }
 
     private fun secureApp(block: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
-        // Prazna konfiguracija - bez nje bi test učitao application.yaml i pravi module().
+        // Empty config - otherwise the test would load application.yaml and the real module().
         environment { config = MapApplicationConfig() }
         application {
             baseModule()
@@ -106,7 +106,7 @@ class RoutesSecurityTest {
 
     @Test
     fun `old token without issuer is rejected`() = secureApp {
-        // Android na 401 sam pribavi novi token (TokenAuthenticator), korisnik se ne odjavljuje.
+        // On 401 the Android app fetches a new token itself (TokenAuthenticator); the user stays signed in.
         val response = client.get("/api/users/u1/watchlist") {
             header(HttpHeaders.Authorization, "Bearer ${token("u1", issuer = null)}")
         }

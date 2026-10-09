@@ -17,11 +17,17 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("CineGrandScraper")
 
+/** What a Cine Grand movie page provides: the original title and the locations showing it. */
 data class CineGrandDeepDetails(
     val originalTitle: String?,
     val locations: List<String>
 )
 
+/**
+ * Cine Grand (several locations), cinegrand-mcf.rs: a Nuxt app rendered with Playwright.
+ * The programme (`/u-bioskopu`) and coming soon (`/uskoro`) list movies; each movie's page lists
+ * the locations showing it, so one row is produced per (movie, location).
+ */
 class CineGrandScraper : CinemaScraper {
     override val cinemaName = "Cine Grand"
     private val baseUrl = "https://cinegrand-mcf.rs"
@@ -55,7 +61,7 @@ class CineGrandScraper : CinemaScraper {
                     }
                 }
 
-                // 1. SKRAPOVANJE TEKUĆEG REPERTOARA (/u-bioskopu)
+                // 1. Current programme (/u-bioskopu)
                 try {
                     logger.info("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
                     page.navigate(urlRepertoar)
@@ -67,8 +73,8 @@ class CineGrandScraper : CinemaScraper {
                     )
                 } catch (e: Exception) {
                     logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
-                    // Snimamo tačno šta je browser video u trenutku pada - bez ovoga se sledeći put
-                    // opet ne bi znalo da li je selektor promenjen, sajt blokirao bota, ili nešto treće.
+                    // Save exactly what the browser saw when it failed; otherwise the next time
+                    // nobody knows whether a selector changed, the site blocked the bot, or something else.
                 }
 
                 val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
@@ -93,7 +99,7 @@ class CineGrandScraper : CinemaScraper {
             }
         }
 
-        // 3. PAMETNA DEDUPLIKACIJA LOKACIJA (Ostaje ista, savršeno radi posao)
+        // 3. De-duplicate per (movie, location).
         val filtriranaMapa = tekuciFilmovi.associateBy { (it.originalTitle ?: it.title) + it.cinemaLocation }.toMutableMap()
         val nasloviKojiVecIgraju = tekuciFilmovi.map { it.originalTitle ?: it.title }.toSet()
 
@@ -146,7 +152,7 @@ class CineGrandScraper : CinemaScraper {
                 logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
                 val deepDetails = scrapeDeepDetails(context, linkFilma)
 
-                // PROLAZAK KROZ SVE PRONAĐENE LOKACIJE (Unrolling)
+                // One row per location found on the movie page.
                 if (deepDetails.locations.isNotEmpty()) {
                     for (imeBioskopa in deepDetails.locations) {
                         val koordinate = LokacijeBioskopa.nadjiKoordinate(imeBioskopa)
@@ -210,19 +216,19 @@ class CineGrandScraper : CinemaScraper {
                 try {
                     privremenaStranica.waitForSelector(".hp-raspon-cname", Page.WaitForSelectorOptions().setTimeout(3500.0))
                 } catch (e: Exception) {
-                    // Ignorišemo - film verovatno stvarno nema zakazane termine još uvek
+                    // Ignored - the movie probably has no screenings scheduled yet.
                 }
 
                 val doc = Jsoup.parse(privremenaStranica.content())
 
-                // Izvlačenje originalnog naslova
+                // Original title
                 val originalniNaslovDiv = doc.select(".hf-original").first()
                 if (originalniNaslovDiv != null) {
                     originalniNaslov = originalniNaslovDiv.text().trim()
                 }
 
-                // Izvlačenje svih lokacija u petlji (za svaku se pravi poseban objekat) - svaki
-                // bioskop sa terminima je ".hp-raspon-cinema" blok sa ".hp-raspon-cname" naslovom.
+                // Every location with screenings is a ".hp-raspon-cinema" block with a
+                // ".hp-raspon-cname" heading; each becomes its own row.
                 val bioskopiElementi = doc.select(".hp-raspon-cname")
                 for (bioskop in bioskopiElementi) {
                     val imeBioskopa = bioskop.text().trim()

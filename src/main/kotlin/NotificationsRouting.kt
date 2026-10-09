@@ -54,7 +54,11 @@ private fun decodePayload(payload: String?): Map<String, String> =
         }.getOrNull()
     }.orEmpty()
 
-/** Registracija uređaja za push obaveštenja i istorija obaveštenja (inbox). */
+/**
+ * Device registration for push notifications and the notification history:
+ * - `PUT|DELETE /api/users/{userId}/device-token`
+ * - `GET /api/users/{userId}/notifications`, `POST .../notifications/read`
+ */
 fun Application.configureNotificationsRouting(
     deviceTokensRepository: DeviceTokensRepository,
     notificationsRepository: NotificationsRepository
@@ -62,7 +66,7 @@ fun Application.configureNotificationsRouting(
     routing {
         authenticate("auth-jwt") {
             route("/api/users/{userId}") {
-                // Poziva se posle prijave i kad FCM izda novi token (onNewToken).
+                // Called after sign-in and whenever FCM issues a new token (onNewToken).
                 put("/device-token") {
                     val userId = call.ownerUserIdOrNull()
                         ?: return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
@@ -72,7 +76,7 @@ fun Application.configureNotificationsRouting(
                     call.respond(HttpStatusCode.NoContent)
                 }
 
-                // Odjava - uređaj više ne prima obaveštenja za ovaj nalog.
+                // Sign-out: the device stops receiving notifications for this account.
                 delete("/device-token") {
                     val userId = call.ownerUserIdOrNull()
                         ?: return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))

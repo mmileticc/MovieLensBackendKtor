@@ -15,6 +15,7 @@ import org.jetbrains.exposed.sql.update
 private const val ACTION_WATCHLIST = "WATCHLIST"
 private const val ACTION_WATCHED = "WATCHED"
 
+/** A watchlist or watched row joined with the cached movie data. */
 data class UserActionMovieRow(
     val tmdbId: Long,
     val title: String,
@@ -22,13 +23,14 @@ data class UserActionMovieRow(
     val rating: Int?,
     val review: String?,
     val createdAt: LocalDateTime?,
-    // Podaci filma iz MoviesTable za filtere/sortiranje Biblioteke na Androidu (žanr, godina,
-    // TMDB ocena). Null/prazno za filmove čiji keš još nije dopunjen - videti ensureCached.
+    // Movie data from MoviesTable for the Library filters and sorting (genre, year, TMDB rating).
+    // Null for movies whose cache has not been backfilled yet (see MoviesRepository.ensureCached).
     val genresJson: String? = null,
     val releaseYear: Int? = null,
     val voteAverage: Double? = null
 )
 
+/** One entry of the friend activity feed (a friend watched and possibly rated a movie). */
 data class FriendActivityRow(
     val friendId: String,
     val friendUsername: String?,
@@ -40,6 +42,7 @@ data class FriendActivityRow(
     val createdAt: LocalDateTime?
 )
 
+/** A friend who watched a given movie, with their rating and note if any. */
 data class FriendWatchedRow(
     val friendId: String,
     val friendUsername: String?,
@@ -48,13 +51,12 @@ data class FriendWatchedRow(
 )
 
 /**
- * DAO za watchlist + "odgledano"/ocena (Faza 2, MOVIELENS_ROADMAP.md). Obe funkcionalnosti dele
- * istu `user_actions` tabelu, razdvojene preko `action_type`.
+ * Watchlist and watched/rated movies. Both live in `user_actions`, separated by `action_type`
+ * (see [UserActionsTable]).
  */
 class UserActionsRepository {
 
-    // Join sa MoviesTable da svaki red odmah nosi title/poster - Android WatchlistItem/HistoryItem
-    // modeli ih očekuju direktno, bez dodatnog poziva.
+    // Joined with MoviesTable so every row already carries title and poster for the app.
     private val joined = UserActionsTable.join(
         MoviesTable,
         JoinType.INNER,
@@ -73,13 +75,14 @@ class UserActionsRepository {
         voteAverage = row[MoviesTable.voteAverage]
     )
 
+    /** The user's watchlist. */
     suspend fun getWatchlist(userId: String): List<UserActionMovieRow> = dbQuery {
         joined.selectAll().where {
             (UserActionsTable.userId eq userId) and (UserActionsTable.actionType eq ACTION_WATCHLIST)
         }.map(::rowMapper)
     }
 
-    /** Parovi (userId, film) za sve korisnike kojima je neki od datih filmova na listi za gledanje. */
+    /** (userId, movie) pairs for every user who has one of the given movies on their watchlist. */
     suspend fun getWatchlistEntriesForMovies(tmdbIds: Collection<Long>): List<Pair<String, UserActionMovieRow>> = dbQuery {
         if (tmdbIds.isEmpty()) return@dbQuery emptyList()
         joined.selectAll().where {
@@ -87,12 +90,14 @@ class UserActionsRepository {
         }.map { it[UserActionsTable.userId] to rowMapper(it) }
     }
 
+    /** The user's watched movies (with ratings). */
     suspend fun getHistory(userId: String): List<UserActionMovieRow> = dbQuery {
         joined.selectAll().where {
             (UserActionsTable.userId eq userId) and (UserActionsTable.actionType eq ACTION_WATCHED)
         }.map(::rowMapper)
     }
 
+    /** One watchlist entry, or null if the movie is not on the user's watchlist. */
     suspend fun getWatchlistItem(userId: String, tmdbId: Long): UserActionMovieRow? = dbQuery {
         joined.selectAll().where {
             (UserActionsTable.userId eq userId) and
@@ -101,6 +106,7 @@ class UserActionsRepository {
         }.map(::rowMapper).firstOrNull()
     }
 
+    /** One watched entry, or null if the user has not marked the movie as watched. */
     suspend fun getHistoryItem(userId: String, tmdbId: Long): UserActionMovieRow? = dbQuery {
         joined.selectAll().where {
             (UserActionsTable.userId eq userId) and
@@ -109,6 +115,7 @@ class UserActionsRepository {
         }.map(::rowMapper).firstOrNull()
     }
 
+    /** Adds the movie to the watchlist; does nothing if it is already there. */
     suspend fun addToWatchlist(userId: String, tmdbId: Long): Unit = dbQuery {
         val exists = UserActionsTable.selectAll().where {
             (UserActionsTable.userId eq userId) and
@@ -125,6 +132,7 @@ class UserActionsRepository {
         }
     }
 
+    /** Removes the movie from the watchlist. */
     suspend fun removeFromWatchlist(userId: String, tmdbId: Long): Unit = dbQuery {
         UserActionsTable.deleteWhere {
             (UserActionsTable.userId eq userId) and
@@ -134,25 +142,13 @@ class UserActionsRepository {
     }
 
     /**
-     * Upsert "odgledano" reda - ako već postoji, samo ažurira ocenu (može biti null = ostaje
-     * odgledano bez ocene); ako ne postoji, kreira novi red. Koristi se i za POST (prvo
-     * označavanje) i za PUT (izmena ocene) - vidi napomenu u MOVIELENS_ROADMAP.md o WATCHED
-     * dizajnu.
+     * Marks the movie as watched, or updates the existing WATCHED row. Used both for the first
+     * "watched" and for later rating changes.
      *
-     * `review` (16. avgust 2026) - kratak tekstualni komentar uz ocenu, nezavisan parametar od
-     * rating-a (može se menjati i sam, bez dodira na ocenu). `review = null` znači "ne diraj
-     * postojeći komentar" (isti obrazac kao avatar u UserDao.updateProfile) - VAŽNO za PUT (izmena
-     * samo ocene): ako pozivalac ne prosledi review, postojeći komentar mora ostati netaknut, ne
-     * obrisan. Prazan string ("") se i dalje tretira kao "obriši komentar" (korisnik je namerno
-     * ispraznio polje) - razlika je između null (nedostaje iz zahteva) i "" (eksplicitno prazno).
-     *
-     * ISTI dogovor sad važi i za `rating` (izmena 16. avgust 2026, ranije se UVEK bezuslovno
-     * upisivao) - `rating = null` u UPDATE grani znači "ne diraj postojeću ocenu" umesto "obriši
-     * je". Ovo je neophodno da bi "napiši/izmeni komentar bez dodira na ocenu" (npr. film je
-     * odgledan bez zvezdica, korisnik samo ostavlja utisak u tekstu) radilo bez slučajnog brisanja
-     * već postojeće ocene. Nema trenutno UI puta koji namerno želi "obriši samo ocenu, ostani
-     * odgledano" - da zatreba, treba poseban parametar (npr. `clearRating: Boolean`), ne
-     * preopterećivati `null` sa dva značenja.
+     * When the row already exists, `null` means "leave unchanged" for both [rating] and [review],
+     * so a request that only changes one of them never erases the other. An empty [review] ("")
+     * clears the note on purpose. There is currently no way to remove only the rating; that would
+     * need a separate parameter rather than overloading `null`.
      */
     suspend fun markWatched(userId: String, tmdbId: Long, rating: Int?, review: String? = null): Unit = dbQuery {
         val exists = UserActionsTable.selectAll().where {
@@ -185,10 +181,7 @@ class UserActionsRepository {
         }
     }
 
-    /**
-     * Uklanja "odgledano" (i ocenu, pošto je u istom redu) - podrška za "undo" ako je korisnik
-     * greškom kliknuo "Odgledano" (lapsus klik).
-     */
+    /** Removes "watched" (and its rating, which lives in the same row) - used for undo. */
     suspend fun removeFromHistory(userId: String, tmdbId: Long): Unit = dbQuery {
         UserActionsTable.deleteWhere {
             (UserActionsTable.userId eq userId) and
@@ -198,10 +191,9 @@ class UserActionsRepository {
     }
 
     /**
-     * Friend activity feed - SAMO "odgledano"/ocene (ACTION_WATCHED), namerno bez watchlist-e.
-     * Dogovoreno u MOVIELENS_ROADMAP.md: watchlist ("planiram da gledam") ostaje privatan, deli se
-     * samo ono što je korisnik stvarno odgledao/ocenio - kao Letterboxd. Ako je friendIds prazna
-     * lista, vraća praznu listu (nema poziva ka bazi bez WHERE IN uslova).
+     * Friend activity feed: only watched/rated movies, never watchlists. What someone plans to
+     * watch stays private; only what they actually watched is shared (like Letterboxd).
+     * Returns an empty list without querying when [friendIds] is empty.
      */
     suspend fun getFriendsActivity(friendIds: List<String>, limit: Int = 50): List<FriendActivityRow> {
         if (friendIds.isEmpty()) return emptyList()
@@ -230,9 +222,9 @@ class UserActionsRepository {
     }
 
     /**
-     * Za Movie Detail "prijatelji su gledali" bedž - od datog spiska friendIds, koji su WATCHED-
-     * ovali baš ovaj tmdbId (i sa kojom ocenom, ako postoji). Nema JOIN na MoviesTable jer nam
-     * ovde ne treba title/poster (već su na klijentu, gleda se taj isti film).
+     * Which of the given friends watched this movie, with their rating if any (the "friends
+     * watched" badge on the movie detail screen). No join with MoviesTable: the app already has
+     * the movie's title and poster.
      */
     suspend fun getFriendsWhoWatched(friendIds: List<String>, tmdbId: Long): List<FriendWatchedRow> {
         if (friendIds.isEmpty()) return emptyList()

@@ -24,26 +24,27 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("TmdbService")
 
+/**
+ * TMDB client: search, details, people, genres, popular and discover lists. Every call is cached
+ * in memory (see the caches below), so the app never talks to TMDB directly and repeated screens
+ * do not cost TMDB requests. Texts are requested in English (`language=en-US`).
+ */
 class TmdbService(private val apiKey: String) {
 
-    // Heuristika: TMDB v4 access token je JWT (počinje s "eyJ").
-    // Ako je tako, koristimo Bearer auth umjesto v3 query parametara.
+    // A TMDB v4 access token is a JWT (starts with "eyJ"); it is sent as a Bearer header.
+    // Otherwise the key is a v3 API key sent as the api_key query parameter.
     private val useV4Bearer: Boolean = apiKey.trim().startsWith("eyJ")
 
-    // In-memory keš (bez spoljne zavisnosti) da ne gađamo TMDB iznova za identične upite
-    // dok korisnik kuca u search bar-u ili se vraća na iste ekrane. Videti MOVIELENS_ROADMAP.md
-    // sekciju 2 za odluku "proxy uživo bez baze, sa malim in-memory kešom".
+    // In-memory caches, so identical requests (typing in search, returning to a screen) do not hit
+    // TMDB again within the TTL.
     private val searchCache = TtlCache<String, List<TmdbMovieMatch>>(ttlMillis = 10 * 60 * 1000)
     private val detailCache = TtlCache<Int, TmdbMovieDetail>(ttlMillis = 60 * 60 * 1000)
-    // Dorada (2. septembar 2026, E2.3 - stranica glumca) - biografija/filmografija se menjaju
-    // još ređe od detalja filma, isti dugi TTL kao detailCache je opravdan.
+    // Biographies and filmographies change even less often than movie details.
     private val personCache = TtlCache<Int, TmdbPersonDetail>(ttlMillis = 60 * 60 * 1000)
     private val popularCache = TtlCache<Int, List<TmdbMovieMatch>>(ttlMillis = 2 * 60 * 60 * 1000)
-    // Lista TMDB žanrova se praktično nikad ne menja - jedan ključ, dug TTL.
+    // TMDB's genre list practically never changes - one key, long TTL.
     private val genreListCache = TtlCache<String, List<TmdbGenre>>(ttlMillis = 24 * 60 * 60 * 1000)
-    // Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
-    // 3-4 ekrana") - keš sad drži CEO GenreDiscoverPage (filmovi + total_pages), ne samo listu
-    // filmova, videti getMoviesByGenresWithTotalPages ispod za obrazloženje.
+    // Caches whole pages including total_pages (see getMoviesByGenresWithTotalPages).
     private val discoverCache = TtlCache<String, GenreDiscoverPage>(ttlMillis = 60 * 60 * 1000)
 
     private val client = HttpClient(CIO) {
@@ -83,10 +84,8 @@ class TmdbService(private val apiKey: String) {
     }
 
     /**
-     * "Hladan start" (prvi HTTPS pozivi ka TMDB posle boot-a servera - DNS + TLS handshake)
-     * ume da bude sporiji od connect/request timeout-a, pa prvih par poziva zna da pukne dok se
-     * konekcija ne "zagreje" (posle toga sve radi normalno). Umesto da to vidi korisnik kao
-     * grešku, tiho pokušamo još jednom pre nego što propagiramo izuzetak dalje.
+     * The first HTTPS calls after a server start (DNS + TLS handshake) can exceed the timeout.
+     * Instead of showing the user an error, a timed-out request is retried once.
      */
     private suspend fun getWithRetry(url: Url, attempts: Int = 2): HttpResponse {
         var lastError: Throwable? = null
@@ -107,6 +106,7 @@ class TmdbService(private val apiKey: String) {
         throw lastError ?: IllegalStateException("Nepoznata greška pri TMDB pozivu")
     }
 
+    /** TMDB movie search by title (optionally narrowed by release year). */
     suspend fun searchMovies(title: String, year: Int? = null): List<TmdbMovieMatch> {
         val cacheKey = "${title.trim().lowercase()}|${year ?: ""}"
         searchCache.get(cacheKey)?.let { return it }
@@ -117,7 +117,7 @@ class TmdbService(private val apiKey: String) {
             parameters.append("include_adult", "false")
             parameters.append("language", "en-US")
             if (!useV4Bearer) {
-                // v3 API key kroz query parametar
+                // v3 API key as a query parameter
                 parameters.append("api_key", apiKey)
             }
         }.build()
@@ -150,20 +150,18 @@ class TmdbService(private val apiKey: String) {
     }
 
     /**
-     * Detalji filma po TMDB ID-ju (žanrovi, cast, runtime, backdrop). Vraća null ako TMDB
-     * odgovori 404 (film ne postoji). `showtimes` (bioskopski termini) namerno nisu ovde —
-     * naš ScrapedMovie model nema satnicu/city/cinema_id koji Android Showtime model očekuje,
-     * pa se ne izmišljaju podaci; videti napomenu u MOVIELENS_ROADMAP.md.
+     * Movie details by TMDB id (genres, cast, runtime, trailers, backdrops, IMDb id), or null if
+     * TMDB answers 404.
      */
     suspend fun getMovieDetails(tmdbId: Int): TmdbMovieDetail? {
         detailCache.get(tmdbId)?.let { return it }
 
         val url = URLBuilder("https://api.themoviedb.org/3/movie/$tmdbId").apply {
-            // videos + images u ISTOM pozivu (trejleri i galerija na Movie Detail-u) - i dalje jedan
-            // TMDB request po filmu, keširan u detailCache kao i do sada.
+            // Videos and images in the SAME request (trailers and gallery on the detail screen),
+            // still one cached TMDB request per movie.
             parameters.append("append_to_response", "credits,videos,images")
-            // Bez ovoga images vraća samo slike na `language` jeziku - backdrop-ovi su najčešće bez
-            // teksta (iso_639_1 = null), pa bi galerija ostala skoro prazna.
+            // Without this, images only returns pictures in the request language; backdrops are
+            // usually language-less (iso_639_1 = null), so the gallery would be almost empty.
             parameters.append("include_image_language", "en,null")
             parameters.append("language", "en-US")
             if (!useV4Bearer) parameters.append("api_key", apiKey)
@@ -189,11 +187,11 @@ class TmdbService(private val apiKey: String) {
             runtime = dto.runtime,
             genres = dto.genres.map { TmdbGenre(it.id, it.name) },
             cast = dto.credits?.cast.orEmpty().map { TmdbCastMember(it.id, it.name, it.character, it.profilePath) },
-            // imdb_id dolazi već u osnovnom /movie/{id} odgovoru, bez append_to_response - koristi
-            // se za dopunske IMDb/Rotten Tomatoes ocene preko OmdbService (videti MovieRouting.kt).
+            // imdb_id is part of the basic /movie/{id} response; used for the extra IMDb/Rotten
+            // Tomatoes ratings from OmdbService.
             imdbId = dto.imdbId?.takeIf { it.isNotBlank() },
-            // Samo YouTube trejleri/teaseri (to je jedino što Android plejer ume da pusti),
-            // zvanični Trailer-i prvi.
+            // Only YouTube trailers/teasers (the only thing the app's player can play), official
+            // trailers first.
             videos = dto.videos?.results.orEmpty()
                 .filter { it.site == "YouTube" && !it.key.isNullOrBlank() && it.type in TRAILER_TYPES }
                 .sortedWith(
@@ -213,13 +211,9 @@ class TmdbService(private val apiKey: String) {
     }
 
     /**
-     * Detalji glumca/člana ekipe po TMDB person ID-ju (biografija, foto, filmografija) - E2.3
-     * (2. septembar 2026, stranica glumca). `append_to_response=movie_credits` u JEDNOM pozivu
-     * vraća i osnovne podatke i filmografiju (isti trik kao `credits` kod getMovieDetails) -
-     * nema potrebe za drugim pozivom ka /person/{id}/movie_credits. `language=en-US` iz istog
-     * razloga kao svuda drugde u ovom fajlu (app-wide konvencija, videti napomene iznad).
-     * Filmografija se sortira po popularnosti opadajuće - "najpoznatije uloge prve", isti
-     * princip kao TMDB-ov sopstveni "known for".
+     * Person details by TMDB id (biography, photo, filmography), or null if unknown.
+     * `append_to_response=movie_credits` returns the filmography in the same request.
+     * Credits are sorted by popularity, so the best-known roles come first.
      */
     suspend fun getPersonDetails(personId: Int): TmdbPersonDetail? {
         personCache.get(personId)?.let { return it }
@@ -265,7 +259,7 @@ class TmdbService(private val apiKey: String) {
         return detail
     }
 
-    /** Svi TMDB filmski žanrovi (id -> naziv) - za filter po žanru na Android "Vidi sve" ekranima. */
+    /** All TMDB movie genres (id -> name), for the genre filters in the app. */
     suspend fun getGenres(): List<TmdbGenre> {
         genreListCache.get("movie")?.let { return it }
 
@@ -285,7 +279,7 @@ class TmdbService(private val apiKey: String) {
         return result
     }
 
-    /** Popularni filmovi (koristi se za /api/movies/trending i /featured). */
+    /** Popular movies (used by /api/movies/trending and as the non-personalized /featured). */
     suspend fun getPopularMovies(page: Int = 1): List<TmdbMovieMatch> {
         popularCache.get(page)?.let { return it }
 
@@ -319,30 +313,18 @@ class TmdbService(private val apiKey: String) {
     }
 
     /**
-     * TMDB "discover" po žanrovima - koristi se za personalizovan /api/movies/featured (Faza 4)
-     * i za /movienight-suggestions (Faza 4.5). `genreIds` se šalje TMDB-u pipe-razdvojeno ("|"),
-     * što TMDB tumači kao OR (bilo koji od navedenih žanrova).
+     * TMDB "discover" by genres, used by the personalized /featured and by Movie Night.
      *
-     * ISPRAVKA (bio bug): ranije je ovde stajalo zarezom-razdvojeno ("with_genres=28,35,80"), za
-     * koje smo pogrešno mislili da je OR - TMDB dokumentacija to zapravo tumači kao AND (film mora
-     * imati SVE navedene žanrove). Zato su predlozi za zajedničko gledanje sa presekom više žanrova
-     * (npr. Animation+Action+Comedy) kolabirali skoro isključivo na animirane filmove - AND upit je
-     * bio previše uzak i vraćao je uglavnom filmove koji spadaju u sve žanrove odjednom. Pipe "|" je
-     * ispravan operator za "bilo koji od ovih žanrova".
+     * Genre ids are joined with "|", which TMDB treats as OR (any of the genres). A comma means AND
+     * (all genres at once), which made suggestions for several shared genres far too narrow.
      */
     suspend fun getMoviesByGenres(genreIds: List<Int>, page: Int = 1): List<TmdbMovieMatch> =
         getMoviesByGenresWithTotalPages(genreIds, page).movies
 
     /**
-     * Dorada (25. avgust 2026, korisnička žalba "za neke prijatelje se predlozi ponavljaju posle
-     * 3-4 ekrana, za druge nikad") - koren problema NIJE bio ovde nego na Android strani
-     * (MovieNightViewModel je rotirao kroz FIKSNIH 5 stranica bez obzira na to koliko stranica
-     * TMDB stvarno ima za dati par žanrova - videti napomenu tamo). Ova funkcija sad vraća i
-     * `total_pages` iz TMDB odgovora (ranije se parsiralo samo `results`), da Android strana zna
-     * PRAVI broj raspoloživih stranica po paru žanrova umesto izmišljenog fiksnog broja - širok
-     * presek žanrova (npr. Action|Comedy|Drama) ima stotine stranica, uzak presek (npr.
-     * Documentary|War) možda samo par - otud utisak da se "nasumično" ponaša različito po
-     * prijatelju, iako je uzrok bio potpuno determinisan (samo pogrešno pretpostavljen).
+     * Same as [getMoviesByGenres], plus TMDB's `total_pages` for the query. Movie Night uses it to
+     * page through all available results: a broad genre mix has hundreds of pages, a narrow one
+     * only a few.
      */
     suspend fun getMoviesByGenresWithTotalPages(genreIds: List<Int>, page: Int = 1): GenreDiscoverPage {
         if (genreIds.isEmpty()) return GenreDiscoverPage(emptyList(), 0)
@@ -383,15 +365,13 @@ class TmdbService(private val apiKey: String) {
     }
 }
 
-/** Jedna TMDB discover stranica po žanrovima + koliko UKUPNO stranica TMDB ima za taj upit - videti getMoviesByGenresWithTotalPages. */
+/** One TMDB discover page plus the total number of pages for the query. */
 data class GenreDiscoverPage(val movies: List<TmdbMovieMatch>, val totalPages: Int)
 
 @Serializable
 private data class TmdbSearchResponse(
     val page: Int? = null,
     val results: List<TmdbMovieDto> = emptyList(),
-    // Dorada (25. avgust 2026) - ranije se uopšte nije parsiralo, pa je Android strana morala da
-    // pogađa koliko stranica postoji (fiksnih 5) - videti getMoviesByGenresWithTotalPages.
     @SerialName("total_pages") val totalPages: Int? = null
 )
 
@@ -405,8 +385,7 @@ private data class TmdbMovieDto(
     @SerialName("poster_path") val posterPath: String? = null,
     val popularity: Double? = null,
     @SerialName("vote_average") val voteAverage: Double? = null,
-    // TMDB šalje genre_ids u svim list odgovorima (/popular, /discover, /search) - koristi ga
-    // Android za filter po žanru na "Vidi sve" ekranima.
+    // genre_ids is part of every TMDB list response; the app uses it for genre filters.
     @SerialName("genre_ids") val genreIds: List<Int> = emptyList()
 )
 
@@ -470,6 +449,7 @@ private data class TmdbCastDto(
     @SerialName("profile_path") val profilePath: String? = null
 )
 
+/** Movie details as used by the routes (mapped from TMDB's response). */
 data class TmdbMovieDetail(
     val id: Int,
     val title: String,
@@ -487,14 +467,15 @@ data class TmdbMovieDetail(
     val backdrops: List<String> = emptyList()
 )
 
-/** YouTube trejler/teaser filma - `key` je YouTube video ID. */
+/** A YouTube trailer or teaser of a movie; `key` is the YouTube video id. */
 data class TmdbVideo(val key: String, val name: String, val type: String)
 
-// @Serializable (ne samo data class) - genres se čuvaju kao JSON string u movies.genres koloni
-// (Faza 4, MOVIELENS_ROADMAP.md - taste profile po žanru), videti MoviesRepository.ensureCached.
+// Serializable because genres are stored as a JSON string in movies.genres
+// (see MoviesRepository.ensureCached).
 @Serializable
 data class TmdbGenre(val id: Int, val name: String)
 
+/** One actor of a movie's cast. */
 data class TmdbCastMember(
     val id: Int,
     val name: String,
@@ -530,6 +511,7 @@ private data class TmdbPersonCastCreditDto(
     val popularity: Double? = null
 )
 
+/** A person (actor or crew member) with their filmography. */
 data class TmdbPersonDetail(
     val id: Int,
     val name: String,
@@ -542,6 +524,7 @@ data class TmdbPersonDetail(
     val movieCredits: List<TmdbPersonMovieCredit>
 )
 
+/** One movie from a person's filmography. */
 data class TmdbPersonMovieCredit(
     val tmdbId: Int,
     val title: String,
@@ -551,6 +534,7 @@ data class TmdbPersonMovieCredit(
     val voteAverage: Double?
 )
 
+/** A movie from a TMDB list response (search, popular, discover). */
 data class TmdbMovieMatch(
     val id: Int?,
     val title: String,
@@ -565,23 +549,22 @@ data class TmdbMovieMatch(
 
 
 /**
- * Proširenje koje obogaćuje listu ScrapedMovie objekata sa TMDB ID-jevima.
- * Vraća Mapu gde je ključ originalni ScrapedMovie, a vrednost pronađeni TMDB ID.
+ * Resolves the TMDB id of every scraped movie by searching TMDB for its original title (falling
+ * back to the local title). Movies without a match keep `tmdbId = null`.
  */
 suspend fun List<ScrapedMovie>.enrichWithTmdbIds(
     tmdbService: TmdbService
-): List<ScrapedMovie> { // Vrati listu, ne mapu
+): List<ScrapedMovie> {
     val titleCache = mutableMapOf<String, Int?>()
 
     return this.map { movie ->
         val searchKey = (movie.originalTitle ?: movie.title).trim().lowercase()
 
-        // Ako imamo u kešu, odmah iskoristi
+        // The same title often appears in several cinemas - search TMDB only once per title.
         if (titleCache.containsKey(searchKey)) {
             return@map movie.copy(tmdbId = titleCache[searchKey])
         }
 
-        // Ako nema u kešu, pozovi TMDB
         val searchResults = try {
             tmdbService.searchMovies(movie.originalTitle ?: movie.title)
         } catch (e: Exception) {
@@ -592,10 +575,9 @@ suspend fun List<ScrapedMovie>.enrichWithTmdbIds(
         val foundId = searchResults.firstOrNull()?.id
         titleCache[searchKey] = foundId
 
-        // PAUZA: Obavezno delay
+        // Pause between searches to stay well below TMDB's rate limit.
         delay(300)
 
-        // Vrati novi objekat sa popunjenim ID-jem
         movie.copy(tmdbId = foundId)
     }
 }

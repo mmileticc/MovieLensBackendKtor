@@ -11,27 +11,21 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("TuckwoodCineplexScraper")
 
 /**
- * tuck.rs (Tuckwood Cineplex, Kneza Miloša 7a, Beograd) je klasičan server-renderovan WordPress
- * sajt (WPBakery Page Builder + "Amy Movie" plugin za repertoar) - potvrđeno preko
- * scraper-debug/tuckwoodprobe_*.html snimaka (TuckwoodProbe.kt). Kartica filma je već u
- * inicijalnom HTML-u (ne treba JS/hidratacija), pa - kao Arena/Roda Cineplex - koristimo prost
- * Jsoup.connect() umesto Playwright-a (lakše, brže, ne treba browser).
+ * Tuckwood Cineplex (Kneza Miloša 7a, Belgrade), tuck.rs: a server-rendered WordPress site
+ * (WPBakery + the "Amy Movie" plugin), so - like Arena/Roda - plain Jsoup is enough.
  *
- * Struktura kartice (".amy-movie-item"):
- * - naslov je UVEK oblika "Srpski naslov / Originalni naslov" (npr. "Blue Lock / Burû Rokku",
- *   "Poslednji Dani ulice Hrastova / The End of Oak Street") unutar "h3.amy-movie-field-title a" -
- *   razdvajamo na " / " (razmak-kosa crta-razmak) da izbegnemo pogrešno sečenje eventualnog naslova
- *   koji sadrži "/" bez razmaka oko njega.
- * - link ka detalju filma je isti href kao na naslovu/posteru (npr. "/amy_movie/blue-lock-.../").
+ * Movie cards (".amy-movie-item"):
+ * - the title is always "Serbian title / Original title" in "h3.amy-movie-field-title a"; it is
+ *   split on " / " (with spaces) so a title containing a bare "/" is not cut;
+ * - the link to the movie page is the same href as on the title/poster ("/amy_movie/.../").
  *
- * Jedna fiksna lokacija (kao Arena/Roda) - nema potrebe za LokacijeBioskopa lookup-om.
+ * One fixed location.
  */
 class TuckwoodCineplexScraper : CinemaScraper {
     override val cinemaName = "Tuckwood Cineplex"
     private val baseUrl = "https://www.tuck.rs"
     private val fiksnaLokacija = "TUCKWOOD CINEPLEX"
-    // Placeholder (isti dogovor kao za ostale bioskope) - korisnik ubacuje tačne koordinate za
-    // Kneza Miloša 7a, Beograd.
+    // Approximate coordinates of Kneza Miloša 7a, Belgrade.
     private val fiksniLat = 44.80984832581882
     private val fiksniLon = 20.465467427357588
 
@@ -46,7 +40,7 @@ class TuckwoodCineplexScraper : CinemaScraper {
         val urlRepertoar = "$baseUrl/repertoar/"
         val urlUskoro = "$baseUrl/uskoro/"
 
-        // 1. Skrapovanje trenutnog repertoara (isUpcoming = false)
+        // 1. Current programme (isUpcoming = false)
         val docRepertoar = fetchDocSaPokusajima(urlRepertoar, "REPERTOAR")
         if (docRepertoar != null) {
             val filmoviSaRepertoara = parseMoviesFromDoc(docRepertoar, isUpcoming = false)
@@ -56,13 +50,13 @@ class TuckwoodCineplexScraper : CinemaScraper {
             tekuciFilmovi.addAll(filmoviSaRepertoara)
         }
 
-        // 2. Skrapovanje sekcije "Uskoro" (isUpcoming = true)
+        // 2. "Coming soon" section (isUpcoming = true)
         val docUskoro = fetchDocSaPokusajima(urlUskoro, "USKORO")
         if (docUskoro != null) {
             upcomingFilmovi.addAll(parseMoviesFromDoc(docUskoro, isUpcoming = true))
         }
 
-        // 3. Interna deduplikacija unutar ovog bioskopa (isti obrazac kao Arena/Roda Cineplex)
+        // 3. De-duplicate within this cinema (same as Arena/Roda Cineplex).
         val filtriranaMapa = tekuciFilmovi.associateBy { it.originalTitle ?: it.title }.toMutableMap()
 
         for (upcomingIno in upcomingFilmovi) {
@@ -78,11 +72,9 @@ class TuckwoodCineplexScraper : CinemaScraper {
     }
 
     /**
-     * Jsoup.connect().get() sa retry-em (2 pokušaja) - jednokratni "Read timed out" na sporijem
-     * serveru kao tuck.rs ne treba da znači da ceo ciklus za ovaj bioskop ostaje bez podataka
-     * (isti princip kao `scrapeDeepDetails` retry u CineGrandScraper-u). Vraća null tek ako i
-     * drugi pokušaj padne - poziv iznad tad jednostavno preskače tu sekciju (repertoar/uskoro)
-     * umesto da baci izuzetak.
+     * Jsoup GET with one retry: a single "Read timed out" on this slower server should not leave
+     * the cinema without data for the whole day. Returns null only if both attempts fail; the
+     * caller then skips that section instead of throwing.
      */
     private fun fetchDocSaPokusajima(url: String, oznakaSekcije: String): Document? {
         val maxPokusaja = 2

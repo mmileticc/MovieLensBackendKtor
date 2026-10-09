@@ -16,24 +16,17 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("CineStarScraper")
 
 /**
- * cinestarcinemas.rs je klasičan server-renderovan sajt (jQuery + Bootstrap-select), NE
- * moderan JS-framework SPA kao Cine Grand (Nuxt) - HTML sa kartama filmova je već prisutan
- * posle prve navigacije, bez potrebe za simulacijom klikova ili čekanjem hidratacije.
+ * CineStar (4 locations), cinestarcinemas.rs: classic server-rendered pages (jQuery + Bootstrap),
+ * currently read with Playwright.
  *
- * KLJUČNA razlika u odnosu na CineGrandScraper: tamo smo morali da otvaramo DETALJ STRANICU
- * svakog filma pojedinačno da bismo saznali u kojim se bioskopima prikazuje (jer je repertoar
- * organizovan PO FILMU). Ovde je obrnuto - svaka od 4 poznate lokacije ima SOPSTVENU stranicu
- * (npr. "/novi-sad-big") koja već sadrži KOMPLETAN repertoar samo za tu lokaciju (naslov, žanr,
- * trajanje, termine za narednih ~3 nedelje unapred) - PA ipak, ORIGINALNI (izvorni) naslov filma
- * SE NE nalazi na toj kartici, samo na zasebnoj detalj-stranici filma (potvrđeno preko
- * scraper-debug/cinestarprobe_detalj-filma_*.html - "Izvorni naslov: ..." unutar
- * ".actors-producer" bloka). Zato i dalje otvaramo po jednu detalj-stranicu PO JEDINSTVENOM
- * FILMU (ne po (film, lokacija) paru - isti film ume da igra na sve 4 lokacije, pa bismo bez
- * dedupe-a nepotrebno 4x skidali isti podatak).
+ * Unlike Cine Grand (organized per movie), every location has its own page (e.g. "/novi-sad-big")
+ * with its complete programme (title, genre, runtime, screenings for about three weeks). The
+ * original title is not on those cards, only on the movie's own page ("Izvorni naslov" inside
+ * ".actors-producer"), so that page is opened once per unique movie - not per (movie, location),
+ * since the same movie often plays at all four locations.
  *
- * Lokacije su nađene ručno (nisu nagađane) - iz "Izaberi svoj CineStar" <select id="kino">
- * dropdowna na agregatnoj strani cinestarcinemas.rs/program-svi-bioskopi (videti scraper-debug/
- * cinestarprobe_agregat-program-svi-bioskopi_*.html snimak).
+ * The location pages were taken from the "Izaberi svoj CineStar" dropdown (`<select id="kino">`)
+ * on cinestarcinemas.rs/program-svi-bioskopi.
  */
 class CineStarScraper : CinemaScraper {
     override val cinemaName = "CineStar"
@@ -90,8 +83,8 @@ class CineStarScraper : CinemaScraper {
                     konacniFilmovi = try {
                         enrichWithOriginalTitles(context, sirovFilmovi)
                     } catch (e: Exception) {
-                        // Ako obogaćivanje iz nekog razloga potpuno padne, bolje vratiti filmove BEZ
-                        // izvornih naslova nego izgubiti ceo ciklus skrapovanja zbog sporedne stvari.
+                        // If enrichment fails completely, return the movies without original
+                        // titles rather than lose the whole run over a secondary detail.
                         logger.warn("[$cinemaName] Greška pri obogaćivanju izvornim naslovima - vraćam filmove bez toga: ${e.message}")
                         sirovFilmovi
                     }
@@ -149,10 +142,9 @@ class CineStarScraper : CinemaScraper {
     }
 
     /**
-     * Dopunjuje svaki film sa "Izvorni naslov" poljem sa njegove detalj-stranice. Isti film
-     * (isti brojčani ID na kraju bookingUrl-a, npr. ".../hari-poter-i-kamen-mudrosti/6579") ume
-     * da se pojavi jednom po SVAKOJ lokaciji gde igra - keširamo po ID-ju da izvorni naslov
-     * čitamo samo JEDNOM po jedinstvenom filmu, ne po (film, lokacija) paru.
+     * Adds the original title ("Izvorni naslov") from each movie's page. The same movie (same
+     * numeric id at the end of bookingUrl, e.g. ".../hari-poter-i-kamen-mudrosti/6579") appears once
+     * per location, so titles are cached by that id and each page is read only once.
      */
     private fun enrichWithOriginalTitles(context: BrowserContext, filmovi: List<ScrapedMovie>): List<ScrapedMovie> {
         val izvorniNasloviPoId = mutableMapOf<String, String?>()

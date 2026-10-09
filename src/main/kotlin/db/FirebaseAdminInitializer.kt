@@ -7,9 +7,16 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("FirebaseAdminInitializer")
 
+/**
+ * Initializes the Firebase Admin SDK, used to verify Google sign-in ID tokens and to send push
+ * notifications.
+ *
+ * Credentials come from `FIREBASE_SERVICE_ACCOUNT_JSON` (the service account JSON as a string,
+ * used on Render and in CI) or, if that is not set, from Application Default Credentials.
+ */
 object FirebaseAdminInitializer {
+    /** Idempotent: safe to call more than once. Throws [IllegalStateException] if credentials are invalid. */
     fun init() {
-        // Ako je već inicijalizovano, ne inicijalizuj ponovo
         if (FirebaseApp.getApps().isNotEmpty()) {
             logger.info("[FIREBASE] Firebase je već inicijalizovan.")
             return
@@ -19,11 +26,10 @@ object FirebaseAdminInitializer {
             val serviceAccountJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
 
             val credentials = if (!serviceAccountJson.isNullOrBlank()) {
-                // Ako je env var postavljen, koristi ga kao JSON string
                 logger.info("[FIREBASE] Korišćenje FIREBASE_SERVICE_ACCOUNT_JSON from environment variable.")
                 GoogleCredentials.fromStream(serviceAccountJson.byteInputStream())
             } else {
-                // Fallback na Application Default Credentials (za lokalno testiranje ili Google Cloud)
+                // Local development with `gcloud auth application-default login`, or Google Cloud.
                 logger.info("[FIREBASE] Korišćenje Application Default Credentials.")
                 GoogleCredentials.getApplicationDefault()
             }

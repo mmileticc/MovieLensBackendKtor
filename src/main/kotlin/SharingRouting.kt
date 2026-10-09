@@ -44,13 +44,13 @@ private fun String.escapeHtml(): String =
     replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
 
 /**
- * Deljenje filma:
- * - `GET /m/{tmdbId}` - javna stranica za link koji korisnik pošalje bilo kome. Messengeri iz
- *   OpenGraph tagova prave pregled (poster + naslov); ako je aplikacija instalirana, Android isti
- *   link otvara direktno u njoj (App Links, videti assetlinks.json ispod).
- * - `GET /.well-known/assetlinks.json` - dokaz da aplikacija sme da otvara ove linkove. SHA-256
- *   otisci ključeva kojima je APK potpisan dolaze iz ANDROID_CERT_SHA256 (više njih odvojeno zarezom).
- * - `POST /api/users/{userId}/share` - slanje filma prijatelju unutar aplikacije (push obaveštenje).
+ * Movie sharing:
+ * - `GET /m/{tmdbId}` - public page behind a shared link. Messengers build a preview (poster and
+ *   title) from its OpenGraph tags; if the app is installed, Android opens the same link directly
+ *   in the app (App Links).
+ * - `GET /.well-known/assetlinks.json` - proof that the app may open these links. The SHA-256
+ *   fingerprints of the APK signing keys come from ANDROID_CERT_SHA256 (comma-separated).
+ * - `POST /api/users/{userId}/share` - send a movie to a friend inside the app (push notification).
  */
 fun Application.configureSharingRouting(
     tmdbService: TmdbService,
@@ -64,7 +64,7 @@ fun Application.configureSharingRouting(
         ?.map { it.trim().uppercase() }
         ?.filter { it.isNotEmpty() }
         .orEmpty()
-    // Opciono: link za preuzimanje aplikacije (Play prodavnica ili APK) na stranici filma.
+    // Optional: download link (Play Store or APK) shown on the movie page.
     val appDownloadUrl = System.getenv("APP_DOWNLOAD_URL")?.trim()?.ifBlank { null }
 
     routing {
@@ -143,7 +143,7 @@ fun Application.configureSharingRouting(
                 if (friendshipsRepository.getFriendshipStatus(userId, req.friendId) != FriendshipStatus.ACCEPTED) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Film možeš poslati samo prijatelju"))
                 }
-                // Film se kešira da bi naslov bio poznat (i za istoriju obaveštenja).
+                // Cache the movie so its title is known (also for the notification history).
                 moviesRepository.ensureCached(req.tmdbId, tmdbService)
                 val title = moviesRepository.getTitle(req.tmdbId.toLong()).orEmpty()
                 val name = userDao.findById(userId)?.username ?: "Korisnik"

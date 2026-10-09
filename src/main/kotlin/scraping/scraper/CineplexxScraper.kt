@@ -19,11 +19,18 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("CineplexxScraper")
 
+/** What a Cineplexx movie page provides: the original title and the cinemas showing it. */
 data class CineplexxDeepDetails(
     val originalTitle: String?,
     val locations: List<String>
 )
 
+/**
+ * Cineplexx (7 cinemas), cineplexx.rs: a React app rendered with Playwright.
+ * The list page for a date (`/film?category=now&location=all&date=...`) gives the movies; each
+ * movie's page gives the original title and the cinemas, producing one row per (movie, cinema).
+ * Coming soon: `/film?category=upcoming&date=all`.
+ */
 class CineplexxScraper : CinemaScraper {
     override val cinemaName = "Cineplexx"
     private val baseUrl = "https://www.cineplexx.rs"
@@ -53,7 +60,7 @@ class CineplexxScraper : CinemaScraper {
                 "User-Agent" to mojUserAgent
             ))
 
-            // Blokiranje slika i fontova radi brzine
+            // Block images and fonts for speed.
             page.route("**/*") { route ->
                 val resourceType = route.request().resourceType()
                 if (resourceType == "image" || resourceType == "font") {
@@ -63,7 +70,7 @@ class CineplexxScraper : CinemaScraper {
                 }
             }
 
-            // 1. Skrapovanje tekućeg repertoara
+            // 1. Current programme
             try {
                 logger.info("[$cinemaName] [REPERTOAR] Otvaram glavnu stranicu: $urlRepertoar")
                 page.navigate(urlRepertoar)
@@ -75,10 +82,10 @@ class CineplexxScraper : CinemaScraper {
                 logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
             }
 
-            // Pravimo skup čistih linkova (bez query parametara) koji već igraju
+            // Links (without query parameters) already in the programme.
             val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
 
-            // 2. Skrapovanje sekcije "Uskoro"
+            // 2. "Coming soon" section
             try {
                 logger.info("[$cinemaName] [USKORO] Otvaram stranicu nadolazećih filmova: $urlUskoro")
                 page.navigate(urlUskoro)
@@ -94,10 +101,10 @@ class CineplexxScraper : CinemaScraper {
             }
         }
 
-        // 3. PAMETNA DEDUPLIKACIJA BEZ GUBITKA LOKACIJA
+        // 3. De-duplicate per (movie, cinema) without losing locations.
         val filtriranaMapa = tekuciFilmovi.associateBy { (it.originalTitle ?: it.title) + it.cinemaLocation }.toMutableMap()
 
-        // Pravimo Set jedinstvenih naslova filmova koji VEĆ igraju na repertoaru za taj dan
+        // Titles that are already playing somewhere today.
         val nasloviKojiVecIgraju = tekuciFilmovi.map { it.originalTitle ?: it.title }.toSet()
 
         for (upcomingIno in upcomingFilmovi) {
@@ -105,14 +112,14 @@ class CineplexxScraper : CinemaScraper {
             val punKljuc = naslovKljuc + upcomingIno.cinemaLocation
 
             if (upcomingIno.cinemaLocation == "Uskoro u bioskopima") {
-                // Ako je film generički, dodajemo ga SAMO ako taj film uopšte ne igra ni u jednom bioskopu danas
+                // A coming-soon movie without a cinema is added only if it plays nowhere today.
                 if (!nasloviKojiVecIgraju.contains(naslovKljuc)) {
                     filtriranaMapa[punKljuc] = upcomingIno
                 } else {
                     logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem prazan unos 'Uskoro u bioskopima' za '$naslovKljuc' jer već ima aktivne projekcije.")
                 }
             } else {
-                // Ako film iz sekcije Uskoro ima specifičnu lokaciju (krenula pretprodaja), tvoj ključ radi savršeno
+                // A coming-soon movie with a cinema (presale started) uses the (movie, cinema) key.
                 if (!filtriranaMapa.containsKey(punKljuc)) {
                     filtriranaMapa[punKljuc] = upcomingIno
                 } else {
@@ -146,18 +153,18 @@ class CineplexxScraper : CinemaScraper {
                 linkFilma = baseUrl + linkFilma
             }
 
-            // Čist URL bez query parametara za proveru duplikata
+            // URL without query parameters, for duplicate checks.
             val cistUrl = linkFilma.substringBefore("?")
 
             if (naslov.isNotEmpty() && linkFilma.isNotEmpty()) {
 
-                // Optimizacija: Ako film iz sekcije Uskoro već igra na repertoaru, preskoči skupu Playwright navigaciju
+                // A coming-soon movie already in the programme: skip the expensive Playwright navigation.
                 if (isUpcoming && vecSkrapovaniLinkovi.contains(cistUrl)) {
                     logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz tekući repertoar)")
                     continue
                 }
 
-                // Dodavanje datuma u URL samo ako je u pitanju tekući repertoar
+                // Add the date to the URL for the current programme only.
                 if (!isUpcoming && !linkFilma.contains("date=")) {
                     linkFilma = if (linkFilma.contains("?")) {
                         "$linkFilma&date=$formatiranDatum&location=all"
@@ -169,7 +176,7 @@ class CineplexxScraper : CinemaScraper {
                 logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
                 val deepDetails = scrapeDeepDetails(context, linkFilma)
 
-                // Ako film ima dodeljene lokacije (Repertoar)
+                // The movie has cinemas (current programme): one row per cinema.
                 if (deepDetails.locations.isNotEmpty()) {
                     for (imeBioskopa in deepDetails.locations) {
                         val koordinate = LokacijeBioskopa.nadjiKoordinate(imeBioskopa)
@@ -188,7 +195,7 @@ class CineplexxScraper : CinemaScraper {
                         )
                     }
                 } else {
-                    // Ako nema lokacija (što je pravilo za sekciju "Uskoro" ili fallback za greške)
+                    // No cinemas (normal for "coming soon", or a failed detail page): one row without location.
                     result.add(
                         ScrapedMovie(
                             title = naslov,
@@ -239,14 +246,14 @@ class CineplexxScraper : CinemaScraper {
 
                 val doc = Jsoup.parse(privremenaStranica.content())
 
-                // Izvlačenje originalnog naslova
+                // Original title
                 val strongTag = doc.select("strong:contains(Originalni naslov)").first()
                 val naslovTekst = strongTag?.nextElementSibling()?.text()?.trim() ?: ""
                 if (naslovTekst.isNotEmpty()) {
                     originalniNaslov = naslovTekst
                 }
 
-                // Izvlačenje lokacija
+                // Cinemas
                 val bioskopiLinkovi = doc.select("a.b-entity-content__title")
                 for (link in bioskopiLinkovi) {
                     val imeBioskopa = link.text().trim()

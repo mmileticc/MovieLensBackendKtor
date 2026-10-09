@@ -14,10 +14,9 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("UserAvatarsTable")
 
 /**
- * Profilne slike koje je korisnik sam postavio. Ranije su stajale kao base64 data-URI direktno u
- * `users.avatar_url` (do ~400KB), pa je svaki odgovor sa avatarom (komentari, prijatelji,
- * pretraga) nosio celu sliku. Sada `avatar_url` sadrži samo putanju ka [AVATAR_ROUTE], a bajtovi
- * se služe posebno i keširaju na klijentu.
+ * Profile pictures uploaded by users. `users.avatar_url` stores only the path to [AVATAR_ROUTE];
+ * the bytes are served separately so that every response containing an avatar (comments, friends,
+ * search) stays small and the app can cache the image.
  */
 object UserAvatarsTable : Table("user_avatars") {
     val userId = varchar("user_id", 64).references(UsersTable.id)
@@ -27,28 +26,32 @@ object UserAvatarsTable : Table("user_avatars") {
     override val primaryKey = PrimaryKey(userId)
 }
 
+/** Avatar bytes with their content type and a short content hash (used as `?v=` and ETag). */
 data class StoredAvatar(val bytes: ByteArray, val mime: String, val hash: String)
 
-/** Putanja rute koja služi avatar; `{userId}` se zamenjuje ID-jem korisnika. */
+/** Route that serves an avatar; `{userId}` is replaced with the user's id. */
 const val AVATAR_ROUTE = "/api/users/{userId}/avatar"
 
 private fun avatarPath(userId: String, hash: String) = "/api/users/$userId/avatar?v=$hash"
 
 /**
- * Javna osnova servera (npr. https://movienee.onrender.com). Ako je postavljena, relativne putanje
- * avatara se u odgovorima pretvaraju u pune URL-ove - starije verzije Android aplikacije umeju da
- * prikažu samo pun URL. U bazi uvek ostaje relativna putanja, jer lokalni i produkcioni server
- * dele istu bazu.
+ * Public base URL of the server (e.g. https://movielensbackendktor.onrender.com). When set, stored
+ * avatar paths are returned as absolute URLs, because older app versions can only load absolute
+ * URLs. The database always keeps the relative path, since the local and the production server
+ * share one database.
  */
 private val publicBaseUrl: String? = System.getenv("PUBLIC_BASE_URL")?.trim()?.trimEnd('/')?.ifBlank { null }
 
-/** `users.avatar_url` u obliku za klijenta. Koristi se na svakom mestu gde se kolona čita. */
+/** `users.avatar_url` as returned to clients. Use it wherever that column is read. */
 fun publicAvatarUrl(stored: String?): String? =
     if (stored != null && stored.startsWith("/") && publicBaseUrl != null) publicBaseUrl + stored else stored
 
 /**
- * Dekodira `data:image/...;base64,...` URI, proverava da je sadržaj zaista JPEG/PNG, upisuje sliku
- * i vraća putanju koja ide u `users.avatar_url`. Poziva se UNUTAR postojeće transakcije.
+ * Decodes a `data:image/...;base64,...` URI, checks that the content really is JPEG or PNG, stores
+ * the image and returns the path to put into `users.avatar_url`. Must be called inside an open
+ * transaction.
+ *
+ * @throws IllegalArgumentException if the data is not a valid JPEG/PNG image.
  */
 internal fun storeAvatarFromDataUri(userId: String, dataUri: String): String {
     val base64 = dataUri.substringAfter("base64,", missingDelimiterValue = "")
@@ -81,8 +84,10 @@ internal fun storeAvatarFromDataUri(userId: String, dataUri: String): String {
     return avatarPath(userId, hash)
 }
 
+/** Reads [UserAvatarsTable] and migrates old inline avatars. */
 class AvatarRepository {
 
+    /** The stored avatar of the user, or null if they never uploaded one. */
     suspend fun getAvatar(userId: String): StoredAvatar? = dbQuery {
         UserAvatarsTable.selectAll().where { UserAvatarsTable.userId eq userId }
             .map { StoredAvatar(it[UserAvatarsTable.bytes], it[UserAvatarsTable.mime], it[UserAvatarsTable.hash]) }
@@ -90,8 +95,10 @@ class AvatarRepository {
     }
 
     /**
-     * Jednokratna migracija: avatari koji su još base64 u `users.avatar_url` prebacuju se u
-     * [UserAvatarsTable]. Idempotentna - posle prvog prolaska nema više `data:` vrednosti.
+     * One-time migration: avatars still stored as base64 in `users.avatar_url` are moved to
+     * [UserAvatarsTable]. Idempotent - once done, no `data:` values remain.
+     *
+     * @return the number of migrated avatars.
      */
     suspend fun migrateInlineAvatars(): Int = dbQuery {
         val inline = UsersTable.selectAll().where { UsersTable.avatarUrl like "data:%" }

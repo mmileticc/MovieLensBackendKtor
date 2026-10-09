@@ -8,16 +8,18 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("ScrapingEngineConcurrent")
 
+/**
+ * Runs all scrapers in parallel (each on the IO dispatcher). A scraper that throws only loses its
+ * own cinema; the others continue.
+ */
 class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
 
-    // Dodajemo 'suspend' ključnu reč jer funkcija sada koristi korutine
+    /** Scrapes every cinema for [date] and returns all movies in one list. */
     suspend fun runAllScrapers(date: LocalDate = LocalDate.now()): List<ScrapedMovie> = coroutineScope {
         logger.info("=== POKRETANJE PARALELNOG GLOBALNOG SKRAPOVANJA FOR DATE: $date ===")
         val startTimeEngine = System.currentTimeMillis()
 
-        // 1. Pokrećemo sve scrapere paralelno na IO nitima
         val poslovi = scrapers.map { scraper ->
-            // async pokreće korutinu u pozadini i vraća "obećanje" (Deferred) da će dati rezultat
             async(Dispatchers.IO) {
                 logger.info("[Engine] Pokrećem paralelnu nit za: ${scraper.cinemaName}")
                 val startTimeScraper = System.currentTimeMillis()
@@ -40,7 +42,6 @@ class ScrapingEngineConcurrent(private val scrapers: List<CinemaScraper>) {
 
         val sveListe: List<List<ScrapedMovie>> = poslovi.awaitAll()
 
-        // .flatten() spaja sve pojedinačne liste u jednu veliku ravnu listu
         val finalniFilmovi = sveListe.flatten()
         val ukupnoVreme = (System.currentTimeMillis() - startTimeEngine) / 1000
         

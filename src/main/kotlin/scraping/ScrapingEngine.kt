@@ -1,6 +1,5 @@
-// DEPRECATED / NEKORIŠĆENO: sekvencijalna verzija engine-a, zamenjena sa ScrapingEngineConcurrent
-// (koji se koristi u Application.kt/configureScrapingLifecycle i MainConcurrent.kt). Ostavljeno
-// samo zato što nije bilo moguće obrisati fajl u ovoj sesiji — bezbedno za ručno brisanje.
+// Deprecated sequential engine, replaced by ScrapingEngineConcurrent. Only used by Main.kt (a
+// manual test) and safe to delete together with it.
 package scraping
 
 
@@ -11,6 +10,7 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("ScrapingEngine")
 
+/** Runs the scrapers one after another. Deprecated: use [ScrapingEngineConcurrent]. */
 @Deprecated("Zamenjeno sa ScrapingEngineConcurrent. Ne koristi se u produkciji.")
 class ScrapingEngine(private val scrapers: List<CinemaScraper>) {
 
@@ -30,10 +30,6 @@ class ScrapingEngine(private val scrapers: List<CinemaScraper>) {
             logger.info("Ukupno pronađeno filmova: ${rezultati.size}")
             logger.info("Vreme izvršavanja: $duration sekundi")
 
-            // ISPIS REZULTATA (Sutra ovde ide poziv Database servisa: database.save(rezultati))
-//            rezultati.forEach { film ->
-//                println("[FILM] [${if(film.isUpcoming) "UPCOMING" else "ACTIVE"}] ${film.title} (${film.originalTitle ?: "Nema originalnog"}) Lokacija ${film.cinemaLocation} -> ${film.bookingUrl}")
-//            }
             sviNadjeniFilmovi.addAll(rezultati)
         }
         val ukupnoVreme = (System.currentTimeMillis() - startTimeEngine) / 1000

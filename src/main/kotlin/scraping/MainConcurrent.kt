@@ -13,25 +13,16 @@ import java.io.PrintStream
 import java.time.LocalDate
 
 /**
- * DIJAGNOSTIČKI test - pokreće SVE aktivne skrapere (isti spisak kao u Application.kt
- * configureScrapingLifecycle) i samo ispisuje rezultat u konzolu. NAMERNO ne dira bazu
- * (nema ScrapedMoviesRepository/insertScrapedMovies poziva ovde) - bezbedno za ponavljano
- * pokretanje bez posledica po produkcione podatke, dok se ne utvrdi zašto CineGrand ne
- * vraća ništa poslednjih par ciklusa.
+ * Diagnostic run of all active scrapers (the same list as the daily job) that only prints the
+ * results. It never touches the database, so it is safe to run repeatedly.
  *
- * Pokretanje: desni klik na ovaj fajl u IntelliJ-u -> "Run 'MainConcurrentKt'" (ili iz
- * terminala: ./gradlew run -PrunMainClass=com.milinko.scraping.MainConcurrentKt, ako je
- * takav task podešen - najlakše je ipak direktno iz IDE-a).
+ * Run it from the IDE ("Run 'MainConcurrentKt'").
  *
- * Šta gledati u izlazu:
- * - Linije "[Engine] Završio <bioskop> za X sekundi. Nađeno: N" na kraju - ako je N=0 za
- *   CineGrand, gledaj linije IZNAD sa "[Cine Grand]" prefiksom (posebno "Greška pri
- *   skrapovanju..." poruke) - tu piše tačan razlog (timeout na koji selektor, HTTP greška...).
- * - Ako CineGrand padne na waitForSelector-u, u projektnom "scraper-debug/" folderu (pored
- *   working directory-ja - u IntelliJ-u to je obično koren MovieLensBackendKtor projekta)
- *   će se pojaviti .html i .png snimak stranice u tom trenutku - pošalji i te fajlove, ne
- *   samo tekst loga, to najbrže pokazuje da li je u pitanju promenjen selektor, Cloudflare/
- *   CAPTCHA blokada, ili nešto treće.
+ * In the output, check the "[Engine] Završio <cinema> ... Nađeno: N" lines at the end. If a
+ * cinema found 0 movies, the lines above with that cinema's prefix give the reason (timeout on a
+ * selector, HTTP error...). When a Playwright scraper fails on waitForSelector, an .html and .png
+ * snapshot of the page is saved to `scraper-debug/` - it shows whether a selector changed or the
+ * site blocked the request.
  */
 suspend fun main() {
     System.setOut(withContext(Dispatchers.IO) {

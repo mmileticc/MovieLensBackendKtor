@@ -22,7 +22,10 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("ScrapedMoviesTable")
 
-// 1. Mapiranje tabele iz baze u Kotlin objekat
+/**
+ * Current cinema programme, one row per (movie, cinema location), written by the daily scraper.
+ * `tmdb_id` is resolved after scraping and is null when no TMDB match was found.
+ */
 object ScrapedMoviesTable : Table("scraped_movies") {
     val id = integer("id").autoIncrement()
     val title = varchar("title", 255)
@@ -35,28 +38,26 @@ object ScrapedMoviesTable : Table("scraped_movies") {
     val isUpcoming = bool("is_upcoming").default(false)
 
     val tmdbId = integer("tmdb_id").nullable()
-    // Eksplicitan UTC default u Kotlinu (umesto oslanjanja na podrazumevanu vrednost kolone u
-    // Postgres-u koja nije vidljiva ovde) - dosledno svim ostalim *Table.kt fajlovima. Poređenje
-    // datuma u Application.kt (configureScrapingLifecycle) pretpostavlja da je ovo UTC.
+    // Explicit UTC default (instead of a database default not visible here), like every other
+    // table. Freshness checks (getLatestScrapeDate) rely on this being UTC.
     val createdAt = datetime("created_at").clientDefault { Clock.System.now().toLocalDateTime(TimeZone.UTC) }
     override val primaryKey = PrimaryKey(id)
 
     init {
-        // Indeks već postoji u bazi; mapiran ovde da ga Exposed ne prijavljuje kao nepoznat.
+        // The index already exists in the database; mapped here so Exposed does not report it as unknown.
         index("idx_scraped_tmdb_id", false, tmdbId)
     }
 }
 
-// 2. Klasa koja sadrži logiku za rad sa podacima
+/** Reads and writes the scraped cinema programme. */
 class ScrapedMoviesRepository {
 
     /**
-     * NAMERNO briše samo bioskope koji su STVARNO vratili nešto ovog ciklusa (per-bioskop zamena),
-     * ne celu tabelu (`deleteAll()`, kako je ranije bilo). Ako je jedan bioskop te noći vratio
-     * praznu listu (privremen pad sajta, timeout, promena strukture stranice...), njegovi stari
-     * (još uvek verovatno tačni, samo blago zastareli) redovi ostaju netaknuti umesto da nestanu -
-     * bez ovoga bi svaki prolazni hiccup jednog scrapera obrisao ceo repertoar tog bioskopa iz
-     * aplikacije dok se scraper ponovo ne uspe, umesto da se samo vidi jučerašnji repertoar.
+     * Replaces the programme of every cinema that returned movies in this run.
+     *
+     * Only those cinemas are replaced, not the whole table: if one cinema's site failed tonight
+     * (timeout, layout change), its rows from the previous day stay visible instead of the cinema
+     * disappearing from the app until the scraper works again.
      */
     suspend fun insertScrapedMovies(moviesList: List<ScrapedMovie>) = dbQuery {
         val bioskopiZaZamenu = moviesList.map { it.cinemaName }.distinct()
@@ -68,8 +69,8 @@ class ScrapedMoviesRepository {
         val obrisanoRedova = ScrapedMoviesTable.deleteWhere { ScrapedMoviesTable.cinemaName inList bioskopiZaZamenu }
         logger.info("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
 
-        // Jedan batch umesto ~500 pojedinačnih INSERT-a (uz reWriteBatchedInserts u JDBC URL-u
-        // drajver ih spaja u višeredne INSERT naredbe).
+        // One batch instead of ~500 single INSERTs (with reWriteBatchedInserts in the JDBC URL the
+        // driver turns it into multi-row INSERT statements).
         ScrapedMoviesTable.batchInsert(moviesList, shouldReturnGeneratedValues = false) { movie ->
             this[ScrapedMoviesTable.title] = movie.title
             this[ScrapedMoviesTable.originalTitle] = movie.originalTitle
@@ -84,31 +85,31 @@ class ScrapedMoviesRepository {
         logger.info("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
     }
 
+    /** True if no programme has been stored yet. */
     suspend fun isDatabaseEmpty(): Boolean = dbQuery {
         ScrapedMoviesTable.selectAll().limit(1).empty()
     }
 
     /**
-     * Najnoviji `created_at` u tabeli (UTC wall-clock) - MAX(), ne proizvoljan prvi red: posle
-     * per-bioskop zamene u tabeli istovremeno žive redovi različite starosti (bioskop koji je pao
-     * zadržava jučerašnje), pa bi `limit(1)` bez sortiranja vraćao nasumično star datum.
-     * Koristi ga i periodična provera za osvežavanje semantičkog indeksa (Application.kt).
+     * The newest `created_at` in the table (UTC). Uses MAX() because, after per-cinema replacement,
+     * rows of different ages coexist (a cinema that failed keeps yesterday's rows).
+     * Also used to detect new data for refreshing the semantic index.
      */
     suspend fun getLatestScrapeTimestamp(): LocalDateTime? = dbQuery {
         val maxCreatedAt = ScrapedMoviesTable.createdAt.max()
         ScrapedMoviesTable.select(maxCreatedAt).singleOrNull()?.get(maxCreatedAt)
     }
 
+    /** Calendar day (Belgrade time) of the newest scrape, or null if the table is empty. */
     suspend fun getLatestScrapeDate(): java.time.LocalDate? {
-        // createdAt je sačuvan kao UTC wall-clock (clientDefault iznad). Prvo ga tumačimo kao
-        // UTC Instant, pa ga prevodimo u beogradski kalendarski dan - ne uzimamo datumski deo
-        // direktno iz UTC vrednosti (to je bio uzrok bug-a: dan bi se "prevrnuo" 1-2h kasnije
-        // nego što je stvarno ponoć u Beogradu, pa bi se skrejpovanje ponovo pokretalo).
+        // created_at is UTC wall-clock time: interpret it as a UTC instant and convert to a
+        // Belgrade calendar day. Taking the date part of the UTC value directly would roll the day
+        // over 1-2 hours after the real midnight in Belgrade and trigger an unnecessary re-scrape.
         val najnoviji = getLatestScrapeTimestamp() ?: return null
         return najnoviji.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
     }
 
-    // 2. Čitanje svih filmova iz baze (ako ti zatrebaju da ih vratiš kroz rutu)
+    /** The whole current programme (all cinemas). */
     suspend fun getAllScrapedMovies(): List<ScrapedMovie> = dbQuery {
         ScrapedMoviesTable.selectAll().map { row ->
             ScrapedMovie(
@@ -125,11 +126,7 @@ class ScrapedMoviesRepository {
         }
     }
 
-    /**
-     * Svi bioskopski termini za konkretan film (Movie Detail ekran - "Bioskopski termini"
-     * sekcija). `tmdbId eq tmdbId` unutar select{} bloka - eq je SqlExpressionBuilder član, radi
-     * preko implicitnog receiver-a, bez potrebe za importom (isti obrazac kao ostatak baze).
-     */
+    /** Every cinema currently showing (or about to show) the movie, for the movie detail screen. */
     suspend fun getShowtimesForMovie(tmdbId: Int): List<ScrapedMovie> = dbQuery {
         ScrapedMoviesTable.selectAll().where { ScrapedMoviesTable.tmdbId eq tmdbId }.map { row ->
             ScrapedMovie(
