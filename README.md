@@ -241,6 +241,7 @@ MovieLensBackendKtor/
 | `DB_POOL_SIZE` | No (default `5`) | HikariCP maximum pool size (keep small - the Supabase pooler limits client connections) |
 | `ANDROID_CERT_SHA256` | No | Comma-separated SHA-256 fingerprints of the APK signing keys (release and debug/beta); served in `/.well-known/assetlinks.json` so `https://<host>/m/{tmdbId}` links open in the app |
 | `APP_DOWNLOAD_URL` | No | Play Store or APK URL shown as a download button on the shared movie page (`/m/{tmdbId}`) |
+| `WEB_APP_URL` | No | Web app base URL (e.g. `https://movienee.web.app`, https only). People opening a shared link `/m/{tmdbId}` are redirected to `/movie/{tmdbId}` there; link preview crawlers still get the page with the OpenGraph tags |
 | `PUBLIC_BASE_URL` | No | Public server URL (e.g. `https://movielensbackendktor.onrender.com`); turns stored avatar paths into absolute URLs in responses, needed by app versions that can't resolve relative URLs |
 | `SCRAPING_BOOLEAN` | Yes | `"true"` to run the cinema scrapers on this instance; `"false"` to only serve reads and refresh the semantic index from existing data |
 | `OMDB_API_KEY` | No | Enables IMDb/Rotten Tomatoes enrichment; ratings silently omitted if unset |
