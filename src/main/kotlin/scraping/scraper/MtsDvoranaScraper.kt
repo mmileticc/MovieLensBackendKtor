@@ -1,75 +1,77 @@
 package com.milinko.scraping.scraper
 
-import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
+import com.milinko.scraping.agent.ScrapingConfig.SHOWTIME_DAYS
+import com.milinko.scraping.agent.ScrapingConfig.USER_AGENT
+import com.milinko.scraping.agent.ScrapingConfig.ZONE
 import com.milinko.scraping.model.ScrapedMovie
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.time.LocalDate
-import org.slf4j.LoggerFactory
+import java.time.LocalDateTime
 
 private val logger = LoggerFactory.getLogger("MtsDvoranaScraper")
 
 /**
  * mts Dvorana (Belgrade), mtsdvorana.rs. The home page lists the current programme and
- * `/filmovi/uskoro` the coming-soon movies; each movie's own page provides the original title.
+ * `/filmovi/uskoro` the coming-soon movies; each movie's own page provides the original title and
+ * the showtimes (see [parseHappeningPage]).
  */
 class MtsDvoranaScraper : CinemaScraper {
     override val cinemaName = "MTS Dvorana"
     private val baseUrl = "https://www.mtsdvorana.rs"
-    private val fiksnaLokacija = "MTS Dvorana, Trg Nikole Pašića"
-    private val fiksniLat = 44.81348329306508
-    private val fiksniLon = 20.46304171756712
-
-    private val mojUserAgent = MOVIE_LENS_USER_AGENT
+    private val location = "MTS Dvorana, Trg Nikole Pašića"
+    private val latitude = 44.81348329306508
+    private val longitude = 20.46304171756712
 
     override fun scrape(date: LocalDate): List<ScrapedMovie> {
-        val tekuciFilmovi = mutableListOf<ScrapedMovie>()
-        val upcomingFilmovi = mutableListOf<ScrapedMovie>()
+        val nowShowing = mutableListOf<ScrapedMovie>()
+        val comingSoon = mutableListOf<ScrapedMovie>()
 
-        val urlRepertoar = "$baseUrl/"
-        val urlUskoro = "$baseUrl/filmovi/uskoro"
+        val programmeUrl = "$baseUrl/"
+        val comingSoonUrl = "$baseUrl/filmovi/uskoro"
 
         // 1. Current programme
         try {
-            val docRepertoar = Jsoup.connect(urlRepertoar)
-                .userAgent(mojUserAgent)
+            val programmeDoc = Jsoup.connect(programmeUrl)
+                .userAgent(USER_AGENT)
                 .timeout(10000)
                 .get()
 
-            tekuciFilmovi.addAll(parseMoviesFromDoc(docRepertoar, isUpcoming = false, vecSkrapovaniLinkovi = emptySet()))
+            nowShowing.addAll(parseMoviesFromDoc(programmeDoc, isUpcoming = false, alreadyScrapedLinks = emptySet(), date))
         } catch (e: IOException) {
-            logger.warn("[$cinemaName] Greška pri skrapovanju glavne stranice repertoara: ${e.message}")
+            logger.warn("[$cinemaName] Failed to scrape the programme page: ${e.message}")
         }
 
         // Links already in the programme, so their pages are not fetched again for "coming soon".
-        val skrapovaniLinkoviNaRepertoaru = tekuciFilmovi.map { it.bookingUrl }.toSet()
+        val programmeLinks = nowShowing.map { it.bookingUrl }.toSet()
 
         // 2. "Coming soon" section
         try {
-            val docUskoro = Jsoup.connect(urlUskoro)
-                .userAgent(mojUserAgent)
+            val comingSoonDoc = Jsoup.connect(comingSoonUrl)
+                .userAgent(USER_AGENT)
                 .timeout(10000)
                 .get()
 
-            upcomingFilmovi.addAll(parseMoviesFromDoc(docUskoro, isUpcoming = true, vecSkrapovaniLinkovi = skrapovaniLinkoviNaRepertoaru))
+            comingSoon.addAll(parseMoviesFromDoc(comingSoonDoc, isUpcoming = true, alreadyScrapedLinks = programmeLinks, date))
         } catch (e: IOException) {
-            logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
+            logger.warn("[$cinemaName] Failed to scrape the coming-soon section: ${e.message}")
         }
 
         // 3. De-duplicate by originalTitle (or title when there is none); the current programme wins.
-        val filtriranaMapa = tekuciFilmovi.associateBy { it.originalTitle ?: it.title }.toMutableMap()
+        val byTitle = nowShowing.associateBy { it.originalTitle ?: it.title }.toMutableMap()
 
-        for (upcomingIno in upcomingFilmovi) {
-            val kljuc = upcomingIno.originalTitle ?: upcomingIno.title
-            if (!filtriranaMapa.containsKey(kljuc)) {
-                filtriranaMapa[kljuc] = upcomingIno
+        for (upcoming in comingSoon) {
+            val key = upcoming.originalTitle ?: upcoming.title
+            if (!byTitle.containsKey(key)) {
+                byTitle[key] = upcoming
             } else {
-                logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem '${upcomingIno.title}' iz sekcije Uskoro jer već postoji na repertoaru.")
+                logger.info("[$cinemaName] [DEDUP] Skipping '${upcoming.title}' from coming soon - already in the programme.")
             }
         }
 
-        return filtriranaMapa.values.toList()
+        return byTitle.values.toList()
     }
 
     /**
@@ -77,68 +79,81 @@ class MtsDvoranaScraper : CinemaScraper {
      * enough: `<a href="/film/<slug>" class="group block"><img/><h3>Title</h3><p>Genre</p></a>`.
      * The home page also lists events ("/dogadjaj/..."), so only "/film/" links are kept.
      */
-    private fun parseMoviesFromDoc(doc: Document, isUpcoming: Boolean, vecSkrapovaniLinkovi: Set<String>): List<ScrapedMovie> {
+    private fun parseMoviesFromDoc(
+        doc: Document,
+        isUpcoming: Boolean,
+        alreadyScrapedLinks: Set<String>,
+        date: LocalDate,
+    ): List<ScrapedMovie> {
+        val now = LocalDateTime.now(ZONE)
         val result = mutableListOf<ScrapedMovie>()
-        val filmovi = doc.select("a[href^=/film/]:has(h3)").distinctBy { it.attr("href") }
+        val cards = doc.select("a[href^=/film/]:has(h3)").distinctBy { it.attr("href") }
 
-        for (film in filmovi) {
-            val naslov = film.select("h3").first()?.text()?.trim().orEmpty()
-            var link = film.attr("href").trim()
+        for (card in cards) {
+            val title = card.select("h3").first()?.text()?.trim().orEmpty()
+            var link = card.attr("href").trim()
 
             if (link.startsWith("/")) {
                 link = baseUrl + link
             }
 
-            if (naslov.isNotEmpty() && link.isNotEmpty()) {
-                val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
+            if (title.isNotEmpty() && link.isNotEmpty()) {
+                val section = if (isUpcoming) "COMING SOON" else "PROGRAMME"
 
                 // A coming-soon movie whose link is already in the programme is a duplicate - skip
                 // fetching its page.
-                if (isUpcoming && vecSkrapovaniLinkovi.contains(link)) {
-                    logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz repertoar)")
+                if (isUpcoming && alreadyScrapedLinks.contains(link)) {
+                    logger.info("[$cinemaName] [$section] Skipping the request for: $title (already scraped from the programme)")
                     continue
                 }
 
-                val nasumicnaPauza = (500..1500).random().toLong()
-                Thread.sleep(nasumicnaPauza)
+                // A short random pause between movie pages, to be gentle with the site.
+                Thread.sleep((500..1500).random().toLong())
 
-                logger.info("[$cinemaName] [$tipLoga] Obrada filma: $naslov")
+                logger.info("[$cinemaName] [$section] Processing: $title")
 
-                // Fetch the movie's own page only when needed (original title).
-                val originalniNaslov = scrapeOriginalTitle(link)
+                // The movie's own page: original title and showtimes.
+                val page = fetchMoviePage(link)
+                val showtimes = page?.happening?.projections.orEmpty()
+                    .inWindow(date, SHOWTIME_DAYS, now)
+                    .map { it.toShowtime(baseUrl, page?.happening?.name ?: title) }
 
                 result.add(
                     ScrapedMovie(
-                        title = naslov,
-                        originalTitle = originalniNaslov,
+                        title = title,
+                        originalTitle = page?.originalTitle,
                         cinemaName = cinemaName,
                         bookingUrl = link,
-                        cinemaLocation = fiksnaLokacija,
-                        latitude = fiksniLat,
-                        longitude = fiksniLon,
-                        isUpcoming = isUpcoming
+                        cinemaLocation = location,
+                        latitude = latitude,
+                        longitude = longitude,
+                        isUpcoming = isUpcoming,
+                        showtimes = showtimes
                     )
                 )
-
-
             }
         }
         return result
     }
 
-    private fun scrapeOriginalTitle(urlFilma: String): String? {
+    private class MoviePage(val originalTitle: String?, val happening: HappeningPage?)
+
+    private fun fetchMoviePage(movieUrl: String): MoviePage? {
         return try {
-            val doc = Jsoup.connect(urlFilma)
-                .userAgent(mojUserAgent)
-                .timeout(5000)
+            val doc = Jsoup.connect(movieUrl)
+                .userAgent(USER_AGENT)
+                .timeout(10000)
                 .get()
 
-            // Same "hf-*" platform as Cine Grand: the original title is in ".hf-original" (present
-            // twice because of the mobile and desktop layouts, hence first()).
-            val originalTitle = doc.select(".hf-original").first()?.text()?.trim().orEmpty()
-            originalTitle.ifEmpty { null }
+            val happening = parseHappeningPage(doc)
+            if (happening == null) logger.warn("[$cinemaName] No Nuxt data on $movieUrl - showtimes unavailable")
+            // The Nuxt data is the primary source; ".hf-original" (rendered twice for mobile and
+            // desktop, hence first()) is the fallback for the original title.
+            val originalTitle = happening?.originalName
+                ?: doc.select(".hf-original").first()?.text()?.trim()?.ifEmpty { null }
+            MoviePage(originalTitle, happening)
         } catch (e: IOException) {
-            logger.warn("[$cinemaName] Greška pri učitavanju stranice filma: $urlFilma -> ${e.message}")
+            logger.warn("[$cinemaName] Failed to load the movie page: $movieUrl -> ${e.message}")
             null
         }
     }

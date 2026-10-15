@@ -3,6 +3,7 @@ package com.milinko
 import com.milinko.db.FriendshipsRepository
 import com.milinko.db.GenreAffinity
 import com.milinko.db.ScrapedMoviesRepository
+import com.milinko.db.ShowtimesRepository
 import com.milinko.db.TasteProfileRepository
 import com.milinko.db.UserActionsRepository
 import com.milinko.services.CinemaSemanticIndex
@@ -73,7 +74,19 @@ data class CinemaShowtimeDto(
     val latitude: Double? = null,
     val longitude: Double? = null,
     @SerialName("distance_km") val distanceKm: Double? = null,
-    @SerialName("is_upcoming") val isUpcoming: Boolean = false
+    @SerialName("is_upcoming") val isUpcoming: Boolean = false,
+    /** Screenings of the next days at this location, earliest first (empty when unknown). */
+    val times: List<ShowtimeSlotDto> = emptyList()
+)
+
+/** One screening: local start time in Belgrade ("2026-10-15T19:00") and the ticket page of exactly it. */
+@Serializable
+data class ShowtimeSlotDto(
+    @SerialName("starts_at") val startsAt: String,
+    val hall: String? = null,
+    val format: String? = null,
+    @SerialName("booking_url") val bookingUrl: String? = null,
+    @SerialName("price_rsd") val priceRsd: Int? = null
 )
 
 @Serializable
@@ -258,7 +271,8 @@ fun Application.configureMovieRouting(
     scrapedMoviesRepository: ScrapedMoviesRepository,
     geminiCinemaSemanticIndex: CinemaSemanticIndex,
     localCinemaSemanticIndex: CinemaSemanticIndex,
-    omdbService: OmdbService
+    omdbService: OmdbService,
+    showtimesRepository: ShowtimesRepository = ShowtimesRepository()
 ) {
     // Finished /now-in-cinemas response. Without it, every request (Home calls it on every app
     // start) would make ~100 TMDB detail calls once the TMDB cache expires. The key is the time of
@@ -443,7 +457,17 @@ fun Application.configureMovieRouting(
                             ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Film nije pronađen"))
 
                         val showtimeRows = scrapedMoviesRepository.getShowtimesForMovie(tmdbId)
-                        var showtimes = showtimeRows.map { row ->
+                        // Times are optional: without them the cinemas are still listed as before.
+                        val slotsByLocation = try {
+                            showtimesRepository.upcomingForMovie(tmdbId).groupBy { it.cinemaLocation }
+                        } catch (e: Exception) {
+                            logger.warn("Termini nisu učitani za tmdbId=$tmdbId: ${e.message}")
+                            emptyMap()
+                        }
+                        // One card per location: versions of the same movie (e.g. 2D and 3D, subtitled
+                        // and dubbed) are separate programme rows with the same TMDB id.
+                        var showtimes = showtimeRows.groupBy { it.cinemaName to it.cinemaLocation }.map { (_, rows) ->
+                            val row = rows.firstOrNull { !it.isUpcoming } ?: rows.first()
                             val distanceKm = if (lat != null && lon != null && row.latitude != null && row.longitude != null) {
                                 haversineKm(lat, lon, row.latitude, row.longitude)
                             } else {
@@ -456,11 +480,23 @@ fun Application.configureMovieRouting(
                                 latitude = row.latitude,
                                 longitude = row.longitude,
                                 distanceKm = distanceKm,
-                                isUpcoming = row.isUpcoming
+                                isUpcoming = rows.all { it.isUpcoming },
+                                times = slotsByLocation[row.cinemaLocation].orEmpty().map { slot ->
+                                    ShowtimeSlotDto(
+                                        startsAt = slot.startsAt.toString(),
+                                        hall = slot.hall,
+                                        format = slot.format,
+                                        bookingUrl = slot.bookingUrl,
+                                        priceRsd = slot.priceRsd
+                                    )
+                                }
                             )
                         }
-                        if (lat != null && lon != null) {
-                            showtimes = showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
+                        // Nearest first when the location is known; otherwise the earliest screening first.
+                        showtimes = if (lat != null && lon != null) {
+                            showtimes.sortedBy { it.distanceKm ?: Double.MAX_VALUE }
+                        } else {
+                            showtimes.sortedBy { it.times.firstOrNull()?.startsAt ?: "~" }
                         }
 
                     // Extra ratings (IMDb/Rotten Tomatoes) come from a separate call that must not

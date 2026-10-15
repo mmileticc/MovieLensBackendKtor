@@ -21,7 +21,7 @@ import com.milinko.services.TmdbService
 import com.milinko.services.enrichWithTmdbIds
 import com.milinko.util.CINEMA_ZONE_ID
 import org.slf4j.LoggerFactory
-import scraping.ScrapingEngineConcurrent
+import com.milinko.scraping.ScrapingEngineConcurrent
 import java.io.File
 import java.io.PrintStream
 import java.time.LocalDate
@@ -113,7 +113,13 @@ private suspend fun runScraperJob(): Int {
 
     logger.info("=== REZIME ($danasnjiDatum) ===")
     poBioskopu.forEach { (ime, filmovi) ->
-        logger.info("- $ime: ${filmovi.size} filmova${if (filmovi.isEmpty()) "  ‼ NULA - proveri log iznad" else ""}")
+        val termina = filmovi.sumOf { it.showtimes.size }
+        val upozorenje = when {
+            filmovi.isEmpty() -> "  ‼ NULA - proveri log iznad"
+            termina == 0 -> "  ‼ bez termina - proveri log iznad"
+            else -> ""
+        }
+        logger.info("- $ime: ${filmovi.size} filmova, $termina termina$upozorenje")
     }
     writeReport(buildReport(danasnjiDatum, poBioskopu, saIdjem, obogaceniFilmovi.size))
 
@@ -209,14 +215,21 @@ private fun buildReport(
     return buildString {
         appendLine("## Scraping $datum")
         appendLine()
-        appendLine("| Bioskop | Ukupno | Repertoar | Uskoro | Status |")
-        appendLine("|---|---|---|---|---|")
+        appendLine("| Bioskop | Ukupno | Repertoar | Uskoro | Termina | Status |")
+        appendLine("|---|---|---|---|---|---|")
         poBioskopu.forEach { (ime, filmovi) ->
             val uskoro = filmovi.count { it.isUpcoming }
-            val status = if (filmovi.isEmpty()) "❌" else "✅"
-            appendLine("| $ime | ${filmovi.size} | ${filmovi.size - uskoro} | $uskoro | $status |")
+            val termina = filmovi.sumOf { it.showtimes.size }
+            // No showtimes while movies were found means the showtime part of the site changed.
+            val status = when {
+                filmovi.isEmpty() -> "❌"
+                termina == 0 -> "⚠️ bez termina"
+                else -> "✅"
+            }
+            appendLine("| $ime | ${filmovi.size} | ${filmovi.size - uskoro} | $uskoro | $termina | $status |")
         }
         appendLine()
         appendLine("TMDB ID pronađen za **$saIdjem / $ukupno** zapisa.")
+        appendLine("Termina ukupno: **${poBioskopu.values.sumOf { filmovi -> filmovi.sumOf { it.showtimes.size } }}** (narednih 7 dana).")
     }
 }

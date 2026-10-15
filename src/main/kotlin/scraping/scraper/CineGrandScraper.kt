@@ -1,251 +1,116 @@
 package com.milinko.scraping.scraper
 
-import com.microsoft.playwright.Browser
-import com.microsoft.playwright.BrowserContext
-import com.microsoft.playwright.BrowserType
-import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
-import com.microsoft.playwright.options.LoadState
-import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
-import com.milinko.scraping.locations.LokacijeBioskopa
+import com.milinko.scraping.agent.ScrapingConfig.SHOWTIME_DAYS
+import com.milinko.scraping.agent.ScrapingConfig.USER_AGENT
+import com.milinko.scraping.agent.ScrapingConfig.ZONE
+import com.milinko.scraping.locations.CinemaLocations
 import com.milinko.scraping.model.ScrapedMovie
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-
-import java.time.LocalDate
 import org.slf4j.LoggerFactory
+import java.io.IOException
+import java.time.LocalDate
+import java.time.LocalDateTime
 
 private val logger = LoggerFactory.getLogger("CineGrandScraper")
 
-/** What a Cine Grand movie page provides: the original title and the locations showing it. */
-data class CineGrandDeepDetails(
-    val originalTitle: String?,
-    val locations: List<String>
-)
-
 /**
- * Cine Grand (several locations), cinegrand-mcf.rs: a Nuxt app rendered with Playwright.
- * The programme (`/u-bioskopu`) and coming soon (`/uskoro`) list movies; each movie's page lists
- * the locations showing it, so one row is produced per (movie, location).
+ * Cine Grand (several locations), cinegrand-mcf.rs - the same Nuxt platform as MTS Dvorana, so
+ * plain HTTP is enough (no browser): the programme (`/u-bioskopu`) and coming soon (`/uskoro`) list
+ * the movies, and each movie's page carries its screenings at every location (see
+ * [parseHappeningPage]). One row is produced per (movie, location), with that location's showtimes.
  */
 class CineGrandScraper : CinemaScraper {
     override val cinemaName = "Cine Grand"
     private val baseUrl = "https://cinegrand-mcf.rs"
-    private val deepDetailsTimeoutMs =
-        (System.getenv("PLAYWRIGHT_DEEP_TIMEOUT_MS")?.toDoubleOrNull() ?: 25000.0)
 
     override fun scrape(date: LocalDate): List<ScrapedMovie> {
-        val tekuciFilmovi = mutableListOf<ScrapedMovie>()
-        val upcomingFilmovi = mutableListOf<ScrapedMovie>()
+        val now = LocalDateTime.now(ZONE)
+        val nowShowing = fetch("$baseUrl/u-bioskopu")
+            ?.let { parseMovies(it, isUpcoming = false, skipLinks = emptySet(), date, now) }
+            .orEmpty()
+        if (nowShowing.isEmpty()) logger.info("[$cinemaName] The programme returned 0 movies - check the selectors.")
 
+        val programmeLinks = nowShowing.map { it.bookingUrl }.toSet()
+        val comingSoon = fetch("$baseUrl/uskoro")
+            ?.let { parseMovies(it, isUpcoming = true, skipLinks = programmeLinks, date, now) }
+            .orEmpty()
 
-        val urlRepertoar = "$baseUrl/u-bioskopu"
-        val urlUskoro = "$baseUrl/uskoro"
-
-        logger.info("[$cinemaName] Inicijalizacija Playwright drajvera...")
-
-        Playwright.create().use { localPlaywright ->
-            try {
-                val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
-                val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
-                val page = context.newPage()
-
-                page.setExtraHTTPHeaders(mapOf("User-Agent" to MOVIE_LENS_USER_AGENT))
-
-                page.route("**/*") { route ->
-                    val resourceType = route.request().resourceType()
-                    if (resourceType == "image" || resourceType == "font" || resourceType == "media") {
-                        route.abort()
-                    } else {
-                        route.resume()
-                    }
-                }
-
-                // 1. Current programme (/u-bioskopu)
-                try {
-                    logger.info("[$cinemaName] [REPERTOAR] Otvaram stranicu: $urlRepertoar")
-                    page.navigate(urlRepertoar)
-                    page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
-
-                    val docRepertoar = Jsoup.parse(page.content())
-                    tekuciFilmovi.addAll(
-                        parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, vecSkrapovaniLinkovi = emptySet())
-                    )
-                } catch (e: Exception) {
-                    logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
-                    // Save exactly what the browser saw when it failed; otherwise the next time
-                    // nobody knows whether a selector changed, the site blocked the bot, or something else.
-                }
-
-                val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
-
-                try {
-                    logger.info("[$cinemaName] [USKORO] Otvaram stranicu: $urlUskoro")
-                    page.navigate(urlUskoro)
-                    page.waitForSelector("a.group.block", Page.WaitForSelectorOptions().setTimeout(15000.0))
-
-                    val docUskoro = Jsoup.parse(page.content())
-                    upcomingFilmovi.addAll(
-                        parseMoviesFromDoc(context, docUskoro, isUpcoming = true, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi)
-                    )
-                } catch (e: Exception) {
-                    logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
-                } finally {
-                    context.close()
-                    browser.close()
-                }
-            } catch (e: Exception) {
-                logger.warn("[$cinemaName] KRITIČNA greška pri pokretanju/pripremi browsera - ništa nije skrapovano ovog ciklusa: ${e.message}")
-            }
+        // De-duplicate per (movie, location); the programme wins.
+        val byKey = nowShowing.associateBy { it.key() + it.cinemaLocation }.toMutableMap()
+        val titlesPlaying = nowShowing.map { it.key() }.toSet()
+        for (upcoming in comingSoon) {
+            // A coming-soon movie without a location is added only if it plays nowhere yet.
+            if (upcoming.cinemaLocation == ScrapedMovie.NO_LOCATION && upcoming.key() in titlesPlaying) continue
+            byKey.putIfAbsent(upcoming.key() + upcoming.cinemaLocation, upcoming)
         }
 
-        // 3. De-duplicate per (movie, location).
-        val filtriranaMapa = tekuciFilmovi.associateBy { (it.originalTitle ?: it.title) + it.cinemaLocation }.toMutableMap()
-        val nasloviKojiVecIgraju = tekuciFilmovi.map { it.originalTitle ?: it.title }.toSet()
-
-        for (upcomingIno in upcomingFilmovi) {
-            val naslovKljuc = upcomingIno.originalTitle ?: upcomingIno.title
-            val punKljuc = naslovKljuc + upcomingIno.cinemaLocation
-
-            if (upcomingIno.cinemaLocation == "Uskoro u bioskopima") {
-                if (!nasloviKojiVecIgraju.contains(naslovKljuc)) {
-                    filtriranaMapa[punKljuc] = upcomingIno
-                }
-            } else {
-                if (!filtriranaMapa.containsKey(punKljuc)) {
-                    filtriranaMapa[punKljuc] = upcomingIno
-                }
-            }
-        }
-
-        return filtriranaMapa.values.toList()
-    }
-
-    private fun parseMoviesFromDoc(
-        context: BrowserContext,
-        doc: Document,
-        isUpcoming: Boolean,
-        vecSkrapovaniLinkovi: Set<String>
-    ): List<ScrapedMovie> {
-        val result = mutableListOf<ScrapedMovie>()
-        val filmovi = doc.select("a.group.block")
-        val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
-
-        logger.info("[$cinemaName] [$tipLoga] Pronađeno filmova na stranici: ${filmovi.size}")
-
-        for (film in filmovi) {
-            var linkFilma = film.attr("href").trim()
-            val naslov = film.select("h3").first()?.text()?.trim() ?: ""
-
-            if (linkFilma.startsWith("/")) {
-                linkFilma = baseUrl + linkFilma
-            }
-
-            val cistUrl = linkFilma.substringBefore("?")
-
-            if (naslov.isNotEmpty() && linkFilma.isNotEmpty()) {
-                if (isUpcoming && vecSkrapovaniLinkovi.contains(cistUrl)) {
-                    logger.info("[$cinemaName] [$tipLoga] Preskačem duboki zahtev za: $naslov (već skinut kroz repertoar)")
-                    continue
-                }
-
-                logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
-                val deepDetails = scrapeDeepDetails(context, linkFilma)
-
-                // One row per location found on the movie page.
-                if (deepDetails.locations.isNotEmpty()) {
-                    for (imeBioskopa in deepDetails.locations) {
-                        val koordinate = LokacijeBioskopa.nadjiKoordinate(imeBioskopa)
-
-                        result.add(
-                            ScrapedMovie(
-                                title = naslov,
-                                originalTitle = deepDetails.originalTitle,
-                                cinemaName = cinemaName,
-                                cinemaLocation = imeBioskopa,
-                                latitude = koordinate?.lat,
-                                longitude = koordinate?.lon,
-                                bookingUrl = linkFilma,
-                                isUpcoming = isUpcoming
-                            )
-                        )
-                    }
-                } else {
-                    result.add(
-                        ScrapedMovie(
-                            title = naslov,
-                            originalTitle = deepDetails.originalTitle,
-                            cinemaName = cinemaName,
-                            cinemaLocation = "Uskoro u bioskopima",
-                            latitude = null,
-                            longitude = null,
-                            bookingUrl = linkFilma,
-                            isUpcoming = isUpcoming
-                        )
-                    )
-                }
-            }
-        }
+        val result = byKey.values.toList()
+        logger.info("[$cinemaName] ${result.size} rows, ${result.sumOf { it.showtimes.size }} showtimes")
         return result
     }
 
-    private fun scrapeDeepDetails(context: BrowserContext, urlFilma: String): CineGrandDeepDetails {
-        if (urlFilma.isEmpty()) return CineGrandDeepDetails(null, emptyList())
+    private fun parseMovies(
+        doc: Document,
+        isUpcoming: Boolean,
+        skipLinks: Set<String>,
+        date: LocalDate,
+        now: LocalDateTime,
+    ): List<ScrapedMovie> {
+        val section = if (isUpcoming) "COMING SOON" else "PROGRAMME"
+        val cards = doc.select("a[href^=/film/]:has(h3)").distinctBy { it.attr("href") }
+        logger.info("[$cinemaName] [$section] Movies on the page: ${cards.size}")
 
-        val maxAttempts = 2
+        return cards.flatMap { card ->
+            val title = card.selectFirst("h3")?.text()?.trim().orEmpty()
+            val link = baseUrl + card.attr("href").trim().substringBefore("?")
+            if (title.isEmpty() || link in skipLinks) return@flatMap emptyList()
 
-        repeat(maxAttempts) { index ->
-            val attempt = index + 1
-            val pronadjeneLokacije = mutableListOf<String>()
-            var originalniNaslov: String? = null
-            val privremenaStranica = context.newPage()
+            // A short random pause between movie pages, to be gentle with the site.
+            Thread.sleep((300..900).random().toLong())
+            val page = fetch(link)?.let { parseHappeningPage(it) }
+            if (page == null) logger.warn("[$cinemaName] No screening data on $link")
+            val movieName = page?.name ?: title
 
-            try {
-                privremenaStranica.route("**/*") { route ->
-                    val resourceType = route.request().resourceType()
-                    if (resourceType == "image" || resourceType == "font" || resourceType == "media") {
-                        route.abort()
-                    } else {
-                        route.resume()
-                    }
-                }
-
-                privremenaStranica.navigate(urlFilma)
-                privremenaStranica.waitForLoadState(LoadState.DOMCONTENTLOADED)
-                privremenaStranica.waitForSelector(".hf-original", Page.WaitForSelectorOptions().setTimeout(10000.0))
-                try {
-                    privremenaStranica.waitForSelector(".hp-raspon-cname", Page.WaitForSelectorOptions().setTimeout(3500.0))
-                } catch (e: Exception) {
-                    // Ignored - the movie probably has no screenings scheduled yet.
-                }
-
-                val doc = Jsoup.parse(privremenaStranica.content())
-
-                // Original title
-                val originalniNaslovDiv = doc.select(".hf-original").first()
-                if (originalniNaslovDiv != null) {
-                    originalniNaslov = originalniNaslovDiv.text().trim()
-                }
-
-                // Every location with screenings is a ".hp-raspon-cinema" block with a
-                // ".hp-raspon-cname" heading; each becomes its own row.
-                val bioskopiElementi = doc.select(".hp-raspon-cname")
-                for (bioskop in bioskopiElementi) {
-                    val imeBioskopa = bioskop.text().trim()
-                    if (imeBioskopa.isNotEmpty() && !pronadjeneLokacije.contains(imeBioskopa)) {
-                        pronadjeneLokacije.add(imeBioskopa)
-                    }
-                }
-
-                return CineGrandDeepDetails(originalniNaslov, pronadjeneLokacije)
-            } catch (e: Exception) {
-                val suffix = if (attempt < maxAttempts) " - retrying" else ""
-                logger.warn("[$cinemaName] Greška pri dubokom čitanju za $urlFilma (attempt $attempt/$maxAttempts): ${e.message}$suffix")
-            } finally {
-                privremenaStranica.close()
+            // One row per location with screenings (all of them, so a movie on pre-sale still shows
+            // where it will play), each with its showtimes in the window.
+            val byLocation = page?.projections.orEmpty().groupBy { it.locationName }
+            if (byLocation.isEmpty()) {
+                return@flatMap listOf(row(title, page?.originalName, ScrapedMovie.NO_LOCATION, link, isUpcoming))
+            }
+            byLocation.map { (location, projections) ->
+                row(title, page?.originalName, location, link, isUpcoming).copy(
+                    showtimes = projections.inWindow(date, SHOWTIME_DAYS, now).map { it.toShowtime(baseUrl, movieName) }
+                )
             }
         }
-
-        return CineGrandDeepDetails(null, emptyList())
     }
+
+    private fun row(title: String, originalTitle: String?, location: String, link: String, isUpcoming: Boolean): ScrapedMovie {
+        val coordinates = if (location == ScrapedMovie.NO_LOCATION) null else CinemaLocations.findCoordinates(location)
+        return ScrapedMovie(
+            title = title,
+            originalTitle = originalTitle,
+            cinemaName = cinemaName,
+            cinemaLocation = location,
+            latitude = coordinates?.lat,
+            longitude = coordinates?.lon,
+            bookingUrl = link,
+            isUpcoming = isUpcoming,
+        )
+    }
+
+    /** GET with one retry, so a single slow response does not lose a movie. */
+    private fun fetch(url: String): Document? {
+        repeat(2) { attempt ->
+            try {
+                return Jsoup.connect(url).userAgent(USER_AGENT).timeout(15_000).get()
+            } catch (e: IOException) {
+                logger.warn("[$cinemaName] Failed to load $url (attempt ${attempt + 1}/2): ${e.message}")
+            }
+        }
+        return null
+    }
+
+    private fun ScrapedMovie.key() = originalTitle ?: title
 }

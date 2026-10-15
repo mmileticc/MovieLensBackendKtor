@@ -9,6 +9,7 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toJavaLocalDate
+import kotlinx.datetime.toKotlinLocalDateTime
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.Table
@@ -53,7 +54,8 @@ object ScrapedMoviesTable : Table("scraped_movies") {
 class ScrapedMoviesRepository {
 
     /**
-     * Replaces the programme of every cinema that returned movies in this run.
+     * Replaces the programme of every cinema that returned movies in this run, together with its
+     * showtimes (`showtimes`), in one transaction.
      *
      * Only those cinemas are replaced, not the whole table: if one cinema's site failed tonight
      * (timeout, layout change), its rows from the previous day stay visible instead of the cinema
@@ -67,7 +69,8 @@ class ScrapedMoviesRepository {
         }
 
         val obrisanoRedova = ScrapedMoviesTable.deleteWhere { ScrapedMoviesTable.cinemaName inList bioskopiZaZamenu }
-        logger.info("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova")
+        val obrisanoTermina = ShowtimesTable.deleteWhere { ShowtimesTable.cinemaName inList bioskopiZaZamenu }
+        logger.info("[DATABASE] Obrisano starih zapisa za bioskope $bioskopiZaZamenu: $obrisanoRedova filmova, $obrisanoTermina termina")
 
         // One batch instead of ~500 single INSERTs (with reWriteBatchedInserts in the JDBC URL the
         // driver turns it into multi-row INSERT statements).
@@ -82,7 +85,27 @@ class ScrapedMoviesRepository {
             this[ScrapedMoviesTable.isUpcoming] = movie.isUpcoming
             this[ScrapedMoviesTable.tmdbId] = movie.tmdbId
         }
-        logger.info("[DATABASE] Skrapovani filmovi (${moviesList.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
+        // Showtimes (the scrapers already left out past ones); an unparsable time is skipped and long
+        // texts are cut to the column size.
+        val termini = moviesList.flatMap { movie ->
+            movie.showtimes.mapNotNull { showtime ->
+                val start = runCatching { java.time.LocalDateTime.parse(showtime.startsAt) }.getOrNull()
+                    ?: return@mapNotNull null
+                Triple(movie, showtime, start)
+            }
+        }
+        ShowtimesTable.batchInsert(termini, shouldReturnGeneratedValues = false) { (movie, showtime, start) ->
+            this[ShowtimesTable.tmdbId] = movie.tmdbId
+            this[ShowtimesTable.movieTitle] = movie.title.take(255)
+            this[ShowtimesTable.cinemaName] = movie.cinemaName.take(100)
+            this[ShowtimesTable.cinemaLocation] = movie.cinemaLocation.take(255)
+            this[ShowtimesTable.startsAt] = start.toKotlinLocalDateTime()
+            this[ShowtimesTable.hall] = showtime.hall?.take(100)
+            this[ShowtimesTable.format] = showtime.format?.take(100)
+            this[ShowtimesTable.bookingUrl] = showtime.bookingUrl
+            this[ShowtimesTable.priceRsd] = showtime.priceRsd
+        }
+        logger.info("[DATABASE] Skrapovani filmovi (${moviesList.size}) i termini (${termini.size}) za ${bioskopiZaZamenu.size} bioskopa su uspešno sačuvani u Supabase!")
     }
 
     /** True if no programme has been stored yet. */

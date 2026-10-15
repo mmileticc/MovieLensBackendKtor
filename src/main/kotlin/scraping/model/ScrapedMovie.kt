@@ -1,9 +1,10 @@
 package com.milinko.scraping.model
 
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /** One movie at one cinema location, as found by a scraper (before and after TMDB matching). */
-@kotlinx.serialization.Serializable
+@Serializable
 data class ScrapedMovie(
     val title: String,
     val originalTitle: String?,
@@ -15,4 +16,14 @@ data class ScrapedMovie(
     val isUpcoming: Boolean = false,
     @SerialName("tmdb_id")
     val tmdbId: Int? = null,
-)
+    /** Screenings in the next [com.milinko.scraping.agent.ScrapingConfig.SHOWTIME_DAYS] days, sorted. */
+    val showtimes: List<ScrapedShowtime> = emptyList(),
+) {
+    companion object {
+        /**
+         * [cinemaLocation] of a coming-soon movie that no cinema has scheduled yet. The apps show it
+         * as is, hence Serbian here (the standalone scrapers repository uses "Coming soon").
+         */
+        const val NO_LOCATION = "Uskoro u bioskopima"
+    }
+}

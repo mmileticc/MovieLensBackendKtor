@@ -42,7 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import com.milinko.util.CINEMA_ZONE_ID
 import org.slf4j.LoggerFactory
-import scraping.ScrapingEngineConcurrent
+import com.milinko.scraping.ScrapingEngineConcurrent
 import java.time.LocalDate
 
 private val logger = LoggerFactory.getLogger("Application")

@@ -73,6 +73,7 @@ object DatabaseFactory {
             SchemaUtils.createMissingTablesAndColumns(
                 UsersTable,
                 ScrapedMoviesTable,
+                ShowtimesTable,
                 MoviesTable,
                 UserActionsTable,
                 FriendshipsTable,

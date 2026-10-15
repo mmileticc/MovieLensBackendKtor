@@ -1,276 +1,164 @@
 package com.milinko.scraping.scraper
 
-import com.microsoft.playwright.Browser
-import com.microsoft.playwright.BrowserContext
-import com.microsoft.playwright.BrowserType
-import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
-import com.microsoft.playwright.options.LoadState
-import com.microsoft.playwright.options.WaitForSelectorState
-import com.milinko.scraping.agent.ScrapingConfig.MOVIE_LENS_USER_AGENT
-import com.milinko.scraping.locations.LokacijeBioskopa
+import com.milinko.scraping.agent.ScrapingConfig.SHOWTIME_DAYS
+import com.milinko.scraping.agent.ScrapingConfig.USER_AGENT
+import com.milinko.scraping.agent.ScrapingConfig.ZONE
+import com.milinko.scraping.locations.CinemaLocations
 import com.milinko.scraping.model.ScrapedMovie
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
-
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
+import com.milinko.scraping.model.ScrapedShowtime
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
 
 private val logger = LoggerFactory.getLogger("CineplexxScraper")
 
-/** What a Cineplexx movie page provides: the original title and the cinemas showing it. */
-data class CineplexxDeepDetails(
-    val originalTitle: String?,
-    val locations: List<String>
+/** A movie in the API's lists (only the fields used here). */
+@Serializable
+internal data class CineplexxMovie(
+    val id: String,
+    val titleCalculated: String? = null,
+    val title: String? = null,
+    val titleOriginalCalculated: String? = null,
+    val shortURL: String? = null,
+)
+
+/** One day of a movie's screenings. */
+@Serializable
+internal data class CineplexxSessionDay(val sessions: List<CineplexxSession> = emptyList())
+
+@Serializable
+internal data class CineplexxSession(
+    val id: String,
+    val cinemaName: String,
+    val screenName: String? = null,
+    val showtime: String,
+    val technologies: List<List<String>> = emptyList(),
 )
 
 /**
- * Cineplexx (7 cinemas), cineplexx.rs: a React app rendered with Playwright.
- * The list page for a date (`/film?category=now&location=all&date=...`) gives the movies; each
- * movie's page gives the original title and the cinemas, producing one row per (movie, cinema).
- * Coming soon: `/film?category=upcoming&date=all`.
+ * Cineplexx (7 cinemas), cineplexx.rs. The website is a React app that loads everything from a JSON
+ * API (`app.cineplexx.rs`, the same data the site shows publicly), which is read directly - much
+ * faster and more reliable than rendering the site:
+ * - `/api/v2/movies?location=all&date=D` - the movies playing on day D (read for every day of the
+ *   showtime window; a movie on today's list is "now showing");
+ * - `/api/v3/moviesweb/{id}/sessions?location=all` - a movie's screenings at every cinema, by day;
+ * - `/api/v2/movies/coming-soon?location=all` - coming soon.
+ *
+ * One row per (movie, cinema), like the other multi-location chains. The API is undocumented and
+ * may change: if it fails, [CineplexxBrowserScraper] reads the rendered site instead (without
+ * showtimes).
  */
-class CineplexxScraper : CinemaScraper {
+class CineplexxScraper(
+    private val fallback: CinemaScraper = CineplexxBrowserScraper(),
+) : CinemaScraper {
     override val cinemaName = "Cineplexx"
-    private val baseUrl = "https://www.cineplexx.rs"
-    private val deepDetailsTimeoutMs =
-        (System.getenv("PLAYWRIGHT_DEEP_TIMEOUT_MS")?.toDoubleOrNull() ?: 25000.0)
+    private val siteUrl = "https://www.cineplexx.rs"
+    private val apiUrl = "https://app.cineplexx.rs/api"
+    private val json = Json { ignoreUnknownKeys = true }
+    private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
 
     override fun scrape(date: LocalDate): List<ScrapedMovie> {
-        val tekuciFilmovi = mutableListOf<ScrapedMovie>()
-        val upcomingFilmovi = mutableListOf<ScrapedMovie>()
-
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-        val formatiranDatum = date.format(formatter)
-
-        val urlRepertoar = "$baseUrl/film?category=now&location=all&date=$formatiranDatum"
-        val urlUskoro = "$baseUrl/film?category=upcoming&date=all"
-
-        logger.info("[$cinemaName] Inicijalizacija Playwright drajvera na radnoj niti...")
-
-        Playwright.create().use { localPlaywright ->
-            val browser = localPlaywright.chromium().launch(BrowserType.LaunchOptions().setHeadless(true))
-            val context = browser.newContext(Browser.NewContextOptions().setViewportSize(1920, 1080))
-            val page = context.newPage()
-
-
-            val mojUserAgent = MOVIE_LENS_USER_AGENT
-            page.setExtraHTTPHeaders(mapOf(
-                "User-Agent" to mojUserAgent
-            ))
-
-            // Block images and fonts for speed.
-            page.route("**/*") { route ->
-                val resourceType = route.request().resourceType()
-                if (resourceType == "image" || resourceType == "font") {
-                    route.abort()
-                } else {
-                    route.resume()
-                }
-            }
-
-            // 1. Current programme
-            try {
-                logger.info("[$cinemaName] [REPERTOAR] Otvaram glavnu stranicu: $urlRepertoar")
-                page.navigate(urlRepertoar)
-                page.waitForSelector("ul.movie-list, li.l-entity__item", Page.WaitForSelectorOptions().setTimeout(15000.0))
-
-                val docRepertoar = Jsoup.parse(page.content())
-                tekuciFilmovi.addAll(parseMoviesFromDoc(context, docRepertoar, isUpcoming = false, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = emptySet()))
-            } catch (e: Exception) {
-                logger.warn("[$cinemaName] Greška pri skrapovanju tekućeg repertoara: ${e.message}")
-            }
-
-            // Links (without query parameters) already in the programme.
-            val skrapovaniGlavniLinkovi = tekuciFilmovi.map { it.bookingUrl.substringBefore("?") }.toSet()
-
-            // 2. "Coming soon" section
-            try {
-                logger.info("[$cinemaName] [USKORO] Otvaram stranicu nadolazećih filmova: $urlUskoro")
-                page.navigate(urlUskoro)
-                page.waitForSelector("ul.movie-list, li.l-entity__item", Page.WaitForSelectorOptions().setTimeout(15000.0))
-
-                val docUskoro = Jsoup.parse(page.content())
-                upcomingFilmovi.addAll(parseMoviesFromDoc(context, docUskoro, isUpcoming = true, formatiranDatum = formatiranDatum, vecSkrapovaniLinkovi = skrapovaniGlavniLinkovi))
-            } catch (e: Exception) {
-                logger.warn("[$cinemaName] Greška pri skrapovanju sekcije Uskoro: ${e.message}")
-            } finally {
-                context.close()
-                browser.close()
-            }
+        val result = try {
+            scrapeApi(date)
+        } catch (e: Exception) {
+            logger.warn("[$cinemaName] API failed: ${e.message}")
+            emptyList()
         }
-
-        // 3. De-duplicate per (movie, cinema) without losing locations.
-        val filtriranaMapa = tekuciFilmovi.associateBy { (it.originalTitle ?: it.title) + it.cinemaLocation }.toMutableMap()
-
-        // Titles that are already playing somewhere today.
-        val nasloviKojiVecIgraju = tekuciFilmovi.map { it.originalTitle ?: it.title }.toSet()
-
-        for (upcomingIno in upcomingFilmovi) {
-            val naslovKljuc = upcomingIno.originalTitle ?: upcomingIno.title
-            val punKljuc = naslovKljuc + upcomingIno.cinemaLocation
-
-            if (upcomingIno.cinemaLocation == "Uskoro u bioskopima") {
-                // A coming-soon movie without a cinema is added only if it plays nowhere today.
-                if (!nasloviKojiVecIgraju.contains(naslovKljuc)) {
-                    filtriranaMapa[punKljuc] = upcomingIno
-                } else {
-                    logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem prazan unos 'Uskoro u bioskopima' za '$naslovKljuc' jer već ima aktivne projekcije.")
-                }
-            } else {
-                // A coming-soon movie with a cinema (presale started) uses the (movie, cinema) key.
-                if (!filtriranaMapa.containsKey(punKljuc)) {
-                    filtriranaMapa[punKljuc] = upcomingIno
-                } else {
-                    logger.info("[$cinemaName] [DEDUPLIKACIJA] Preskačem duplikat za '$naslovKljuc' na lokaciji [${upcomingIno.cinemaLocation}].")
-                }
-            }
-        }
-
-        return filtriranaMapa.values.toList()
+        if (result.isNotEmpty()) return result
+        logger.warn("[$cinemaName] No data from the API - falling back to the website (without showtimes)")
+        return fallback.scrape(date)
     }
 
-    private fun parseMoviesFromDoc(
-        context: BrowserContext,
-        doc: Document,
-        isUpcoming: Boolean,
-        formatiranDatum: String,
-        vecSkrapovaniLinkovi: Set<String>
-    ): List<ScrapedMovie> {
-        val result = mutableListOf<ScrapedMovie>()
-        val filmovi = doc.select("li.l-entity__item")
-        val tipLoga = if (isUpcoming) "USKORO" else "REPERTOAR"
+    private fun scrapeApi(date: LocalDate): List<ScrapedMovie> {
+        val now = LocalDateTime.now(ZONE)
 
-        logger.info("[$cinemaName] [$tipLoga] Broj filmova na listi za obradu: ${filmovi.size}")
-
-        for (film in filmovi) {
-            val linkElement = film.select("a.l-entity__item-link")
-            var linkFilma = linkElement.attr("href").trim()
-            val naslov = film.select("figcaption.l-entity__figure-caption").first()?.text()?.trim() ?: ""
-
-            if (linkFilma.startsWith("/")) {
-                linkFilma = baseUrl + linkFilma
-            }
-
-            // URL without query parameters, for duplicate checks.
-            val cistUrl = linkFilma.substringBefore("?")
-
-            if (naslov.isNotEmpty() && linkFilma.isNotEmpty()) {
-
-                // A coming-soon movie already in the programme: skip the expensive Playwright navigation.
-                if (isUpcoming && vecSkrapovaniLinkovi.contains(cistUrl)) {
-                    logger.info("[$cinemaName] [$tipLoga] Preskačem mrežni zahtev za: $naslov (već skinut kroz tekući repertoar)")
-                    continue
-                }
-
-                // Add the date to the URL for the current programme only.
-                if (!isUpcoming && !linkFilma.contains("date=")) {
-                    linkFilma = if (linkFilma.contains("?")) {
-                        "$linkFilma&date=$formatiranDatum&location=all"
-                    } else {
-                        "$linkFilma?date=$formatiranDatum&location=all"
-                    }
-                }
-
-                logger.info("[$cinemaName] [$tipLoga] Otvaram detalje za film: $naslov")
-                val deepDetails = scrapeDeepDetails(context, linkFilma)
-
-                // The movie has cinemas (current programme): one row per cinema.
-                if (deepDetails.locations.isNotEmpty()) {
-                    for (imeBioskopa in deepDetails.locations) {
-                        val koordinate = LokacijeBioskopa.nadjiKoordinate(imeBioskopa)
-
-                        result.add(
-                            ScrapedMovie(
-                                title = naslov,
-                                originalTitle = deepDetails.originalTitle,
-                                cinemaName = cinemaName,
-                                cinemaLocation = imeBioskopa,
-                                latitude = koordinate?.lat,
-                                longitude = koordinate?.lon,
-                                bookingUrl = linkFilma,
-                                isUpcoming = isUpcoming
-                            )
-                        )
-                    }
-                } else {
-                    // No cinemas (normal for "coming soon", or a failed detail page): one row without location.
-                    result.add(
-                        ScrapedMovie(
-                            title = naslov,
-                            originalTitle = deepDetails.originalTitle,
-                            cinemaName = cinemaName,
-                            cinemaLocation = "Uskoro u bioskopima",
-                            latitude = null,
-                            longitude = null,
-                            bookingUrl = linkFilma,
-                            isUpcoming = isUpcoming
-                        )
-                    )
-                }
-            }
+        // Movies of every day in the window, in the order they first appear; today's are now showing.
+        val movies = LinkedHashMap<String, CineplexxMovie>()
+        var today = emptySet<String>()
+        for (offset in 0 until SHOWTIME_DAYS) {
+            val day = date.plusDays(offset.toLong())
+            val list = get<List<CineplexxMovie>>("$apiUrl/v2/movies?location=all&date=$day") ?: continue
+            if (offset == 0) today = list.map { it.id }.toSet()
+            list.forEach { movies.putIfAbsent(it.id, it) }
         }
-        return result
-    }
+        if (today.isEmpty()) return emptyList()
 
-    private fun scrapeDeepDetails(context: BrowserContext, urlFilma: String): CineplexxDeepDetails {
-        if (urlFilma.isEmpty()) return CineplexxDeepDetails(null, emptyList())
-
-        val maxAttempts = 2
-
-        repeat(maxAttempts) { index ->
-            val attempt = index + 1
-            val pronadjeneLokacije = mutableListOf<String>()
-            var originalniNaslov: String? = null
-            val privremenaStranica = context.newPage()
-
-            try {
-                privremenaStranica.route("**/*") { route ->
-                    val resourceType = route.request().resourceType()
-                    if (resourceType == "image" || resourceType == "font") {
-                        route.abort()
-                    } else {
-                        route.resume()
-                    }
-                }
-
-                privremenaStranica.navigate(urlFilma)
-                privremenaStranica.waitForLoadState(LoadState.DOMCONTENTLOADED)
-                privremenaStranica.waitForSelector(
-                    ".s-entity-details, .b-entity-content__title",
-                    Page.WaitForSelectorOptions()
-                        .setState(WaitForSelectorState.ATTACHED)
-                        .setTimeout(deepDetailsTimeoutMs)
+        val rows = movies.values.flatMap { movie ->
+            val days = get<List<CineplexxSessionDay>>("$apiUrl/v3/moviesweb/${movie.id}/sessions?location=all").orEmpty()
+            val byCinema = days.flatMap { it.sessions }.groupBy { it.cinemaName.trim() }
+            val isUpcoming = movie.id !in today
+            if (byCinema.isEmpty()) return@flatMap listOf(row(movie, ScrapedMovie.NO_LOCATION, isUpcoming))
+            byCinema.map { (cinema, sessions) ->
+                row(movie, cinema.uppercase(), isUpcoming).copy(
+                    showtimes = sessions.mapNotNull { it.toShowtime(date, now) }.sortedBy { it.startsAt }
                 )
-
-                val doc = Jsoup.parse(privremenaStranica.content())
-
-                // Original title
-                val strongTag = doc.select("strong:contains(Originalni naslov)").first()
-                val naslovTekst = strongTag?.nextElementSibling()?.text()?.trim() ?: ""
-                if (naslovTekst.isNotEmpty()) {
-                    originalniNaslov = naslovTekst
-                }
-
-                // Cinemas
-                val bioskopiLinkovi = doc.select("a.b-entity-content__title")
-                for (link in bioskopiLinkovi) {
-                    val imeBioskopa = link.text().trim()
-                    if (imeBioskopa.isNotEmpty() && !pronadjeneLokacije.contains(imeBioskopa)) {
-                        pronadjeneLokacije.add(imeBioskopa)
-                    }
-                }
-
-                return CineplexxDeepDetails(originalniNaslov, pronadjeneLokacije)
-            } catch (e: Exception) {
-                val suffix = if (attempt < maxAttempts) " - retrying" else ""
-                logger.warn("[$cinemaName] Greška pri dubokom čitanju (attempt $attempt/$maxAttempts): ${e.message}$suffix")
-            } finally {
-                privremenaStranica.close()
             }
         }
 
-        return CineplexxDeepDetails(null, emptyList())
+        // Coming soon: only movies that are not in the window already.
+        val comingSoon = get<List<CineplexxMovie>>("$apiUrl/v2/movies/coming-soon?location=all").orEmpty()
+            .filter { it.id !in movies }
+            .map { row(it, ScrapedMovie.NO_LOCATION, isUpcoming = true) }
+
+        logger.info("[$cinemaName] ${rows.size} rows (+${comingSoon.size} coming soon), ${rows.sumOf { it.showtimes.size }} showtimes")
+        return rows + comingSoon
+    }
+
+    private fun row(movie: CineplexxMovie, location: String, isUpcoming: Boolean): ScrapedMovie {
+        val title = (movie.titleCalculated ?: movie.title).orEmpty().trim()
+        val coordinates = if (location == ScrapedMovie.NO_LOCATION) null else CinemaLocations.findCoordinates(location)
+        return ScrapedMovie(
+            title = title,
+            originalTitle = movie.titleOriginalCalculated?.trim()?.takeIf { it.isNotEmpty() && it != title },
+            cinemaName = cinemaName,
+            cinemaLocation = location,
+            latitude = coordinates?.lat,
+            longitude = coordinates?.lon,
+            bookingUrl = movie.shortURL?.let { "$siteUrl/film/$it" } ?: "$siteUrl/film",
+            isUpcoming = isUpcoming,
+        )
+    }
+
+    /** A screening in the window that has not started yet; the API sends local time with an offset. */
+    private fun CineplexxSession.toShowtime(from: LocalDate, now: LocalDateTime): ScrapedShowtime? {
+        val start = runCatching { OffsetDateTime.parse(showtime).atZoneSameInstant(ZONE).toLocalDateTime() }
+            .getOrNull() ?: return null
+        if (start.isBefore(now) || !start.toLocalDate().isBefore(from.plusDays(SHOWTIME_DAYS.toLong()))) return null
+        return ScrapedShowtime(
+            startsAt = start.withSecond(0).withNano(0).toString(),
+            hall = screenName?.trim()?.ifEmpty { null },
+            // [["3D"], ["SINH"]] -> "3D - SINH"
+            format = technologies.flatten().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" - ").ifEmpty { null },
+            bookingUrl = "$siteUrl/purchase/wizard/$id",
+        )
+    }
+
+    private inline fun <reified T> get(url: String): T? {
+        val request = HttpRequest.newBuilder(URI.create(url))
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json")
+            .timeout(Duration.ofSeconds(20))
+            .GET()
+            .build()
+        return try {
+            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() != 200) {
+                logger.warn("[$cinemaName] HTTP ${response.statusCode()} for $url")
+                null
+            } else {
+                json.decodeFromString<T>(response.body())
+            }
+        } catch (e: Exception) {
+            logger.warn("[$cinemaName] Failed to read $url: ${e.message}")
+            null
+        }
     }
 }

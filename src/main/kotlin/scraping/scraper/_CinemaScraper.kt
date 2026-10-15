@@ -5,7 +5,7 @@ import java.time.LocalDate
 
 /** One cinema chain's website. Implementations must not throw for a single failing page. */
 interface CinemaScraper {
-    /** Name used for logs, reports and `scraped_movies.cinema_name` (e.g. "Cineplexx"). */
+    /** Chain name used in the results and logs (e.g. "Cineplexx"). */
     val cinemaName: String
 
     /** Scrapes the programme for [date] and returns it as uniform [ScrapedMovie]s. */
