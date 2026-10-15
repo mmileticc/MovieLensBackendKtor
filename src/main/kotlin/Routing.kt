@@ -175,6 +175,13 @@ fun Application.configureRouting(
                     val imageMime = detectImageMime(imageBytes)
                         ?: return@post call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse("Nepodržan format slike - koristi JPEG ili PNG"))
 
+                    // Checked last, so an invalid upload never uses up the daily budget.
+                    val quota = geminiQuota.tryAcquire(GeminiFeature.VISION, call.userIdOrNull() ?: call.clientIp())
+                    if (quota != GeminiQuotaResult.OK) {
+                        logger.warn("VISION refused: $quota")
+                        return@post call.respond(HttpStatusCode.TooManyRequests, ErrorResponse(quota.message()))
+                    }
+
                     val t0 = System.currentTimeMillis()
                     logger.info("VISION: size=${size} mime=${imageMime}")
 

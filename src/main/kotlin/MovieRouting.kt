@@ -399,6 +399,14 @@ fun Application.configureMovieRouting(
                         if (!index.isReady()) {
                             return@get call.respond(NowInCinemasResponseDto(emptyList()))
                         }
+                        // Only the Gemini engine costs quota (every query is embedded by Gemini).
+                        if (index === geminiCinemaSemanticIndex) {
+                            val quota = geminiQuota.tryAcquire(GeminiFeature.SEMANTIC, call.clientIp())
+                            if (quota != GeminiQuotaResult.OK) {
+                                logger.warn("Semantic search refused: $quota")
+                                return@get call.respond(HttpStatusCode.TooManyRequests, ErrorResponse(quota.message()))
+                            }
+                        }
                         try {
                             val matches = index.searchByQuery(query)
                             call.respond(

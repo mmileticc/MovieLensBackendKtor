@@ -41,6 +41,10 @@ private val ENGLISH_MESSAGES = mapOf(
     "Nedostaje slika" to "Missing image",
     "Nepodržan format slike - koristi JPEG ili PNG" to "Unsupported image format - use JPEG or PNG",
     "Previše zahteva. Pokušaj ponovo za minut." to "Too many requests. Please try again in a minute.",
+    "Iskoristio si današnji limit za ovu pretragu. Pokušaj ponovo sutra." to
+        "You have used today's limit for this search. Please try again tomorrow.",
+    "AI pretraga je za danas iskorišćena. Ostatak aplikacije radi normalno - pokušaj ponovo sutra." to
+        "AI search has reached today's limit. Everything else still works - please try again tomorrow.",
     "Prijava trenutno nije moguća, pokušaj ponovo" to "Sign-in is currently unavailable, please try again",
 
     // Movies / people

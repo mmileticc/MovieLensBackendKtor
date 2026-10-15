@@ -231,6 +231,9 @@ MovieLensBackendKtor/
 |---|---|---|
 | `APP_JWT_SIGNING_KEY` | Yes | HMAC256 secret used to sign/verify the backend session JWT |
 | `GEMINI_API_KEY` | Yes | Google Gemini API key (vision detection + embeddings) |
+| `GEMINI_VISION_MODELS` | No | Comma-separated models for image recognition, tried in order when one is overloaded (default `gemini-3.1-flash-lite,gemini-3.5-flash-lite`) |
+| `VISION_DAILY_LIMIT` / `SEMANTIC_DAILY_LIMIT` | No | Daily Gemini budget for the whole service (default 900 / 800, below the free quotas) |
+| `VISION_DAILY_PER_USER` / `SEMANTIC_DAILY_PER_CLIENT` | No | Daily limit per user (image recognition) / per client IP (semantic search) (default 10 / 30) |
 | `TMDB_API_KEY` | Yes | TMDB v3 API key or v4 Bearer access token (auto-detected) |
 | `DB_HOST` | Yes | Postgres host (Supabase project host or local) |
 | `DB_PORT` | No (default `6543`) | `6543` for Supabase pooler, `5432` for direct connection |

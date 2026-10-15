@@ -1,5 +1,6 @@
 package com.milinko.services
 
+import org.slf4j.LoggerFactory
 import com.google.genai.Client
 import com.google.genai.errors.ApiException
 import com.google.genai.types.Blob
@@ -38,6 +39,16 @@ private fun isGeminiOverloadSignal(message: String?): Boolean {
  */
 
 class GeminiService(private val apiKey: String) {
+
+    private val logger = LoggerFactory.getLogger("GeminiService")
+
+    /**
+     * Models for image recognition, tried in order when one is overloaded. GEMINI_VISION_MODELS
+     * (comma-separated) overrides the list, e.g. when Google renames a model.
+     */
+    private val visionModels: List<String> = System.getenv("GEMINI_VISION_MODELS")
+        ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
+        ?: listOf("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
 
     // The Gemini SDK call is blocking, so it runs on a dedicated thread instead of Ktor's threads.
     private val sdkDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -110,25 +121,36 @@ class GeminiService(private val apiKey: String) {
             .parts(listOf(textPart, imagePart))
             .build()
 
-        val sb = StringBuilder()
-        val gemini31flashLite = "gemini-3.1-flash-lite"
-        val gemini35flash = "gemini-3.5-flash"
-        val gemini3flashpreview = "gemini-3-flash-preview" //KORISCEN DO SAD
-        try {
-            client.models.generateContentStream(gemini31flashLite, content, null)
-                .forEach { response ->
-                    val t = response.text()
-                    if (!t.isNullOrEmpty()) sb.append(t)
+        // Each model has its own free daily quota (Flash Lite 3.1 and 3.5: 15 per minute, 500 per day),
+        // so when the first one is overloaded or used up, the next one gets the same request.
+        var raw: String? = null
+        var lastOverload: Exception? = null
+        for ((attempt, model) in visionModels.withIndex()) {
+            val sb = StringBuilder()
+            try {
+                client.models.generateContentStream(model, content, null)
+                    .forEach { response ->
+                        val t = response.text()
+                        if (!t.isNullOrEmpty()) sb.append(t)
+                    }
+                raw = sb.toString().trim()
+                break
+            } catch (e: Exception) {
+                val overloadedCode = e is ApiException && (e.code() == 429 || e.code() == 503)
+                if (overloadedCode || isGeminiOverloadSignal(e.message)) {
+                    logger.warn("Gemini model $model overloaded, trying the next one: ${e.message}")
+                    lastOverload = e
+                    continue
                 }
-        } catch (e: Exception) {
-            val overloadedCode = e is ApiException && (e.code() == 429 || e.code() == 503)
-            if (overloadedCode || isGeminiOverloadSignal(e.message)) {
-                throw GeminiOverloadedException("Gemini je trenutno preopterećen: ${e.message}")
+                // A fallback model that fails otherwise (e.g. renamed) still counts as "busy".
+                if (attempt > 0 && lastOverload != null) continue
+                throw IllegalStateException("Gemini SDK error: ${e.message}", e)
             }
-            throw IllegalStateException("Gemini SDK error: ${e.message}", e)
+        }
+        if (raw == null) {
+            throw GeminiOverloadedException("Gemini je trenutno preopterećen: ${lastOverload?.message}")
         }
 
-        val raw = sb.toString().trim()
         val jsonString = sanitizeToJson(raw)
         try {
             JSON.decodeFromString(GeminiMovieCandidatesResponse.serializer(), jsonString)
