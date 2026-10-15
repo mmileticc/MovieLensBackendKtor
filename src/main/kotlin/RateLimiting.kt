@@ -9,10 +9,6 @@ import io.ktor.server.auth.principal
 import io.ktor.server.plugins.origin
 import io.ktor.server.plugins.ratelimit.RateLimit
 import io.ktor.server.plugins.ratelimit.RateLimitName
-import io.ktor.server.plugins.ratelimit.rateLimit
-import io.ktor.server.response.respond
-import io.ktor.server.routing.get
-import io.ktor.server.routing.routing
 import kotlin.time.Duration.Companion.minutes
 
 // Per-client request limits. The most important ones guard Gemini calls (image recognition and
@@ -48,39 +44,22 @@ internal fun ApplicationCall.userIdOrNull(): String? =
     principal<JWTPrincipal>()?.payload?.subject?.takeIf { it.isNotBlank() }
 
 /**
- * Render sits behind a reverse proxy, so `remoteHost` is the proxy's address; the client's real
- * address is the first entry of X-Forwarded-For.
+ * The client's real address for the per-IP limits.
+ *
+ * Requests reach Render through Cloudflare: X-Forwarded-For is "<whatever the client sent>, <real
+ * client>, <Cloudflare>, <Render proxy>", so its first entry can be forged and was used to get
+ * around the limits. Cloudflare puts the address it saw into CF-Connecting-IP and rejects requests
+ * that try to send that header themselves, so it is trusted first. Without it (e.g. a direct
+ * connection in development) the last X-Forwarded-For entry - added by the nearest proxy, never by
+ * the client - is used, then the socket address.
  */
-internal fun ApplicationCall.clientIp(): String =
-    request.headers[HttpHeaders.XForwardedFor]
-        ?.split(',')
-        ?.firstOrNull()
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?: request.origin.remoteHost
+internal fun ApplicationCall.clientIp(): String = clientIpFrom(
+    cfConnectingIp = request.headers["CF-Connecting-IP"],
+    forwardedFor = request.headers[HttpHeaders.XForwardedFor],
+    remoteHost = request.origin.remoteHost
+)
 
-/**
- * TEMPORARY diagnostics: shows the caller its own forwarding headers, to find out where Render's
- * proxy puts the real client address (a client can prepend fake entries to X-Forwarded-For).
- * Reveals nothing but the caller's own request; remove once clientIp() is fixed.
- */
-fun Application.configureForwardingDiagnostics() {
-    routing {
-        rateLimit(RATE_LIMIT_PUBLIC) {
-            get("/api/debug/forwarding") {
-                val headers = call.request.headers
-                call.respond(
-                    mapOf(
-                        "x_forwarded_for" to headers.getAll(HttpHeaders.XForwardedFor).orEmpty().joinToString(" | "),
-                        "cf_connecting_ip" to headers["CF-Connecting-IP"].orEmpty(),
-                        "true_client_ip" to headers["True-Client-IP"].orEmpty(),
-                        "x_real_ip" to headers["X-Real-IP"].orEmpty(),
-                        "forwarded" to headers[HttpHeaders.Forwarded].orEmpty(),
-                        "remote_host" to call.request.origin.remoteHost,
-                        "client_ip_used" to call.clientIp()
-                    )
-                )
-            }
-        }
-    }
-}
+internal fun clientIpFrom(cfConnectingIp: String?, forwardedFor: String?, remoteHost: String): String =
+    cfConnectingIp?.trim()?.takeIf { it.isNotEmpty() }
+        ?: forwardedFor?.split(',')?.lastOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: remoteHost
