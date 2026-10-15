@@ -26,6 +26,8 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
+import com.google.firebase.auth.FirebaseAuth
+import com.milinko.db.AccountDeletion
 
 private val logger = LoggerFactory.getLogger("UserActionsRouting")
 
@@ -199,7 +201,8 @@ fun Application.configureUserActionsRouting(
     moviesRepository: MoviesRepository,
     tasteProfileRepository: TasteProfileRepository,
     userDao: UserDao,
-    friendshipsRepository: FriendshipsRepository
+    friendshipsRepository: FriendshipsRepository,
+    accountDeletion: AccountDeletion = AccountDeletion()
 ) {
     routing {
         authenticate("auth-jwt") {
@@ -240,6 +243,24 @@ fun Application.configureUserActionsRouting(
                     val user = userDao.findById(userId)
                         ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("Korisnik nije pronađen"))
                     call.respond(buildUserProfileDto(userId, user))
+                }
+
+                // Deletes the account with all its data, then the Firebase sign-in (so signing in
+                // again starts a fresh account). Asked for from the app's profile page.
+                delete {
+                    val userId = call.ownerUserIdOrNull()
+                        ?: return@delete call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj akciji"))
+                    val firebaseUid = accountDeletion.deleteAccount(userId)
+                        ?: return@delete call.respond(HttpStatusCode.NotFound, ErrorResponse("Korisnik nije pronađen"))
+                    try {
+                        FirebaseAuth.getInstance().deleteUser(firebaseUid)
+                    } catch (e: Exception) {
+                        // The data is gone already; a leftover Firebase sign-in only means a new,
+                        // empty account if the person signs in again.
+                        logger.warn("Account $userId deleted, but not its Firebase user: ${e.message}")
+                    }
+                    logger.info("Account deleted: $userId")
+                    call.respond(HttpStatusCode.NoContent)
                 }
 
                 put("/profile") {

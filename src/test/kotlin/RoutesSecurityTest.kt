@@ -12,6 +12,7 @@ import com.milinko.services.GeminiService
 import com.milinko.services.TmdbService
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -99,6 +100,15 @@ class RoutesSecurityTest {
     @Test
     fun `user cannot read another user's list`() = secureApp {
         val response = client.get("/api/users/u2/watchlist") {
+            header(HttpHeaders.Authorization, "Bearer ${token("u1")}")
+        }
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+    }
+
+    @Test
+    fun `deleting an account needs a token and only works for your own account`() = secureApp {
+        assertEquals(HttpStatusCode.Unauthorized, client.delete("/api/users/u1").status)
+        val response = client.delete("/api/users/u2") {
             header(HttpHeaders.Authorization, "Bearer ${token("u1")}")
         }
         assertEquals(HttpStatusCode.Forbidden, response.status)
