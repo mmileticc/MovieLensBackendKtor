@@ -1,5 +1,7 @@
 package com.milinko
 
+import com.milinko.db.FeedFriend
+import com.milinko.db.FeedRepository
 import com.milinko.db.FriendshipStatus
 import com.milinko.db.FriendshipsRepository
 import com.milinko.db.SendRequestResult
@@ -20,6 +22,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -88,6 +91,50 @@ data class FriendActivityDto(
 
 @Serializable
 data class FriendActivityResponseDto(val activities: List<FriendActivityDto>)
+
+/** Who did something in the feed. */
+@Serializable
+data class FeedFriendDto(
+    val id: String,
+    val username: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null
+)
+
+/** One feed card: a friend watched, rated or commented on a movie. `timestamp` is epoch ms. */
+@Serializable
+data class FeedItemDto(
+    val id: String,
+    val type: String,
+    val friend: FeedFriendDto,
+    @SerialName("tmdb_id") val tmdbId: Long,
+    @SerialName("movie_title") val movieTitle: String,
+    @SerialName("poster_path") val posterPath: String? = null,
+    val rating: Int? = null,
+    val text: String? = null,
+    val timestamp: Long
+)
+
+/** A movie the user and these friends all want to watch (only movies on the user's own list). */
+@Serializable
+data class SharedWishDto(
+    @SerialName("tmdb_id") val tmdbId: Long,
+    @SerialName("movie_title") val movieTitle: String,
+    @SerialName("poster_path") val posterPath: String? = null,
+    val friends: List<FeedFriendDto>,
+    @SerialName("cinema_count") val cinemaCount: Int
+)
+
+@Serializable
+data class FeedResponseDto(
+    val items: List<FeedItemDto>,
+    @SerialName("has_more") val hasMore: Boolean,
+    /** Only on the first page (no `before`). */
+    @SerialName("shared_wishes") val sharedWishes: List<SharedWishDto> = emptyList()
+)
+
+private const val FEED_PAGE_SIZE = 20
+
+private fun FeedFriend.toDto() = FeedFriendDto(id = id, username = username, avatarUrl = avatarUrl)
 
 // A movie from a friend's watched list (watchlists are never shown to anyone).
 @Serializable
@@ -182,7 +229,8 @@ fun Application.configureFriendsRouting(
     userActionsRepository: UserActionsRepository,
     tasteProfileRepository: TasteProfileRepository,
     tmdbService: TmdbService,
-    pushService: PushService
+    pushService: PushService,
+    feedRepository: FeedRepository = FeedRepository()
 ) {
     suspend fun displayName(userId: String) = userDao.findById(userId)?.username ?: "Korisnik"
 
@@ -217,6 +265,45 @@ fun Application.configureFriendsRouting(
                     val pathUserId = parameters["userId"] ?: return null
                     val tokenUserId = principal<JWTPrincipal>()?.payload?.subject
                     return if (pathUserId == tokenUserId) pathUserId else null
+                }
+
+                // The friends feed, page by page (`before` = timestamp of the last item seen, epoch ms).
+                get("/feed") {
+                    val userId = call.ownerUserIdOrNull()
+                        ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Nemaš pristup ovoj listi"))
+                    val beforeMs = call.request.queryParameters["before"]?.toLongOrNull()
+                    val before = beforeMs?.let { Instant.fromEpochMilliseconds(it).toLocalDateTime(TimeZone.UTC) }
+                    val friendIds = friendshipsRepository.getFriendIds(userId)
+                    // One extra row tells whether there is another page.
+                    val rows = feedRepository.friendsFeed(friendIds, before, FEED_PAGE_SIZE + 1)
+                    val wishes = if (before == null) feedRepository.sharedWishes(userId, friendIds) else emptyList()
+                    call.respond(
+                        FeedResponseDto(
+                            items = rows.take(FEED_PAGE_SIZE).map { row ->
+                                FeedItemDto(
+                                    id = row.id,
+                                    type = row.type.name.lowercase(),
+                                    friend = row.friend.toDto(),
+                                    tmdbId = row.tmdbId,
+                                    movieTitle = row.title,
+                                    posterPath = row.posterPath,
+                                    rating = row.rating,
+                                    text = row.text,
+                                    timestamp = row.createdAt.toInstant(TimeZone.UTC).toEpochMilliseconds()
+                                )
+                            },
+                            hasMore = rows.size > FEED_PAGE_SIZE,
+                            sharedWishes = wishes.map { wish ->
+                                SharedWishDto(
+                                    tmdbId = wish.tmdbId,
+                                    movieTitle = wish.title,
+                                    posterPath = wish.posterPath,
+                                    friends = wish.friends.map { it.toDto() },
+                                    cinemaCount = wish.cinemaCount
+                                )
+                            }
+                        )
+                    )
                 }
 
                 route("/friends") {

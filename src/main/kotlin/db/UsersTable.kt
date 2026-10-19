@@ -38,6 +38,8 @@ object UsersTable : Table("users") {
         Clock.System.now().toLocalDateTime(TimeZone.UTC)
     }
     val lastLogin = datetime("last_login").nullable()
+    // Personal invite link code (`/i/{code}`), created on first use; resetting it disables the old link.
+    val inviteCode = varchar("invite_code", 16).nullable().uniqueIndex("idx_users_invite_code")
     override val primaryKey = PrimaryKey(id)
 
     init {
@@ -179,6 +181,25 @@ class UserDao {
             .firstOrNull()
     }
 
+    /** The user's invite code, created (random, unique) the first time it is asked for. */
+    suspend fun getOrCreateInviteCode(userId: String): String? = dbQuery {
+        val row = UsersTable.selectAll().where { UsersTable.id eq userId }.singleOrNull() ?: return@dbQuery null
+        row[UsersTable.inviteCode] ?: newInviteCode(userId)
+    }
+
+    /** Replaces the invite code; the old link stops working. Null if there is no such user. */
+    suspend fun resetInviteCode(userId: String): String? = dbQuery {
+        if (UsersTable.selectAll().where { UsersTable.id eq userId }.empty()) return@dbQuery null
+        newInviteCode(userId)
+    }
+
+    /** The user an invite code belongs to, or null. */
+    suspend fun findByInviteCode(code: String): User? = dbQuery {
+        UsersTable.selectAll().where { UsersTable.inviteCode eq code }
+            .map { it.toUser() }
+            .firstOrNull()
+    }
+
     /** User by internal id, or null. */
     suspend fun findById(userId: String): User? = dbQuery {
         UsersTable.selectAll().where { UsersTable.id eq userId }
@@ -253,7 +274,21 @@ class UserDao {
     }
 }
 
+private const val INVITE_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+private const val INVITE_CODE_LENGTH = 10
+private val inviteRandom = java.security.SecureRandom()
 
-
-
-
+/**
+ * Stores a fresh random invite code for the user (inside a transaction). 10 characters from 56
+ * (no look-alikes such as 0/O, 1/l) are ~58 bits - not guessable; a rare clash is retried.
+ */
+private fun newInviteCode(userId: String): String {
+    repeat(5) {
+        val code = (1..INVITE_CODE_LENGTH).map { INVITE_ALPHABET[inviteRandom.nextInt(INVITE_ALPHABET.length)] }.joinToString("")
+        if (UsersTable.selectAll().where { UsersTable.inviteCode eq code }.empty()) {
+            UsersTable.update({ UsersTable.id eq userId }) { it[inviteCode] = code }
+            return code
+        }
+    }
+    throw IllegalStateException("Could not create a unique invite code")
+}

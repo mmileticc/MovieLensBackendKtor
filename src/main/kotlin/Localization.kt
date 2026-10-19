@@ -61,6 +61,8 @@ private val ENGLISH_MESSAGES = mapOf(
 
     // Friends
     "Nedostaje friendId" to "Missing friend id",
+    "Pozivni link nije važeći" to "This invite link is not valid",
+    "Ovo je tvoj pozivni link" to "This is your own invite link",
     "Nema zahteva za prihvatanje" to "There is no request to accept",
     "Ne možeš poslati zahtev samom sebi" to "You can't send a friend request to yourself",
     "Predlozi su dostupni samo za prijatelje" to "Suggestions are available only for friends",

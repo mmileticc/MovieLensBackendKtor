@@ -119,6 +119,30 @@ class FriendshipsRepository {
         SendRequestResult.SENT
     }
 
+    /**
+     * [userId] accepted [inviterId]'s invite link: they become friends right away (the inviter agreed
+     * by sharing the link). A pending request in either direction is accepted, otherwise an accepted
+     * friendship is created. Returns false if they already were friends.
+     */
+    suspend fun acceptInvite(inviterId: String, userId: String): Boolean = dbQuery {
+        require(inviterId != userId) { "Ovo je tvoj pozivni link" }
+        val between = ((FriendshipsTable.senderId eq inviterId) and (FriendshipsTable.receiverId eq userId)) or
+            ((FriendshipsTable.senderId eq userId) and (FriendshipsTable.receiverId eq inviterId))
+        val existing = FriendshipsTable.selectAll().where { between }.firstOrNull()
+        when {
+            existing == null -> FriendshipsTable.insert { row ->
+                row[senderId] = inviterId
+                row[receiverId] = userId
+                row[status] = STATUS_ACCEPTED
+            }.let { true }
+            existing[FriendshipsTable.status] == STATUS_ACCEPTED -> false
+            else -> {
+                FriendshipsTable.update({ between }) { it[status] = STATUS_ACCEPTED }
+                true
+            }
+        }
+    }
+
     /** Accepts an incoming request; only the receiver ([userId]) can accept. Returns false if there was none. */
     suspend fun acceptRequest(userId: String, otherUserId: String): Boolean = dbQuery {
         val updated = FriendshipsTable.update({

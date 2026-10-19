@@ -78,6 +78,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation("io.ktor:ktor-server-test-host-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
+    // In-memory database for repository tests (SQL that cannot be checked without one).
+    testImplementation("com.h2database:h2:2.3.232")
 
 
     //scraping biblioteke

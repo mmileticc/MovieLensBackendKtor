@@ -47,7 +47,7 @@ private fun ApplicationCall.ownerUserIdOrNull(): String? {
  * page itself (poster, title) and must not be redirected to the web app, which has no per-movie
  * tags. Unknown crawlers fall back to the redirect and get a generic preview.
  */
-private val LINK_PREVIEW_BOT = Regex(
+internal val LINK_PREVIEW_BOT = Regex(
     "facebookexternalhit|facebookcatalog|meta-externalagent|whatsapp|telegrambot|twitterbot|" +
         "slackbot|discordbot|linkedinbot|viber|skypeuripreview|pinterest|redditbot|embedly|" +
         "applebot|googlebot|bingbot|snapchat|instagram|mastodon|crawler|spider",
@@ -58,7 +58,7 @@ private val LINK_PREVIEW_BOT = Regex(
 internal fun webAppUrlOrNull(raw: String?): String? =
     raw?.trim()?.trimEnd('/')?.takeIf { it.startsWith("https://") || it.startsWith("http://localhost") }
 
-private fun String.escapeHtml(): String =
+internal fun String.escapeHtml(): String =
     replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
 
 /**

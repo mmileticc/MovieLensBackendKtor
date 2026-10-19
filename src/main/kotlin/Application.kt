@@ -170,6 +170,7 @@ fun Application.module() {
     configureCommentsRouting(tmdbService, commentsRepository, moviesRepository, friendshipsRepository, userDao, pushService)
     configureNotificationsRouting(deviceTokensRepository, notificationsRepository)
     configureSharingRouting(tmdbService, moviesRepository, friendshipsRepository, userDao, pushService)
+    configureInviteRouting(userDao, friendshipsRepository, pushService)
     configureAvatarRouting(avatarRepository)
     migrateInlineAvatars(avatarRepository)
 }
