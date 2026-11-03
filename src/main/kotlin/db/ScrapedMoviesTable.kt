@@ -132,6 +132,22 @@ class ScrapedMoviesRepository {
         return najnoviji.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
     }
 
+    /**
+     * Calendar day (Belgrade time) of each cinema's newest rows. A cinema missing from the map has
+     * no rows at all. Used by the backup run to scrape again only the cinemas that failed today.
+     */
+    suspend fun getLatestScrapeDatesByCinema(): Map<String, java.time.LocalDate> = dbQuery {
+        val maxCreatedAt = ScrapedMoviesTable.createdAt.max()
+        ScrapedMoviesTable.select(ScrapedMoviesTable.cinemaName, maxCreatedAt)
+            .groupBy(ScrapedMoviesTable.cinemaName)
+            .mapNotNull { row ->
+                val newest = row[maxCreatedAt] ?: return@mapNotNull null
+                row[ScrapedMoviesTable.cinemaName] to
+                    newest.toInstant(TimeZone.UTC).toLocalDateTime(CINEMA_TIME_ZONE).date.toJavaLocalDate()
+            }
+            .toMap()
+    }
+
     /** The whole current programme (all cinemas). */
     suspend fun getAllScrapedMovies(): List<ScrapedMovie> = dbQuery {
         ScrapedMoviesTable.selectAll().map { row ->

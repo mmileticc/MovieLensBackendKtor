@@ -82,18 +82,29 @@ private suspend fun runScraperJob(): Int {
 
     val danasnjiDatum = LocalDate.now(CINEMA_ZONE_ID)
 
+    var scraperi = sviAktivniScraperi()
+
     // Backup scheduled runs (see daily-scrape.yml): GitHub sometimes drops scheduled runs when busy,
-    // so later triggers only scrape if nothing was stored today yet.
+    // and a site sometimes refuses the machine of one run (Tuckwood: "Connect timed out" from some
+    // GitHub runners). So later triggers scrape only the cinemas that have nothing from today yet -
+    // on a new runner, usually with an address the site accepts - and skip if all are fresh.
+    var ponovniPokusaj = false
     if (System.getenv("SKIP_IF_FRESH").equals("true", ignoreCase = true)) {
-        val poslednjiScrape = repository.getLatestScrapeDate()
-        if (poslednjiScrape == danasnjiDatum) {
-            logger.info("[ScraperJob] Podaci su već od danas ($poslednjiScrape) - rezervni run preskače skrejpovanje.")
+        val poBioskopu = repository.getLatestScrapeDatesByCinema()
+        val zastareli = scraperi.filter { poBioskopu[it.cinemaName] != danasnjiDatum }
+        if (zastareli.isEmpty()) {
+            logger.info("[ScraperJob] Svi bioskopi već imaju današnje podatke - rezervni run preskače skrejpovanje.")
             writeGithubOutput("skipped", "true")
             return 0
         }
-        logger.info("[ScraperJob] Poslednji scrape je od $poslednjiScrape - rezervni run preuzima dnevno skrejpovanje.")
+        ponovniPokusaj = zastareli.size < scraperi.size
+        if (ponovniPokusaj) {
+            logger.info("[ScraperJob] Bez današnjih podataka: ${zastareli.map { it.cinemaName }} - rezervni run ponavlja samo njih.")
+        } else {
+            logger.info("[ScraperJob] Nema današnjih podataka - rezervni run preuzima dnevno skrejpovanje.")
+        }
+        scraperi = zastareli
     }
-    val scraperi = sviAktivniScraperi()
 
     val skrapovaniFilmovi = ScrapingEngineConcurrent(scraperi).runAllScrapers(danasnjiDatum)
 
@@ -121,7 +132,7 @@ private suspend fun runScraperJob(): Int {
         }
         logger.info("- $ime: ${filmovi.size} filmova, $termina termina$upozorenje")
     }
-    writeReport(buildReport(danasnjiDatum, poBioskopu, saIdjem, obogaceniFilmovi.size))
+    writeReport(buildReport(danasnjiDatum, poBioskopu, saIdjem, obogaceniFilmovi.size, ponovniPokusaj))
 
     try {
         notifyWatchlistMoviesInCinemas(obogaceniFilmovi)
@@ -210,11 +221,16 @@ private fun buildReport(
     datum: LocalDate,
     poBioskopu: Map<String, List<ScrapedMovie>>,
     saIdjem: Int,
-    ukupno: Int
+    ukupno: Int,
+    ponovniPokusaj: Boolean = false
 ): String {
     return buildString {
         appendLine("## Scraping $datum")
         appendLine()
+        if (ponovniPokusaj) {
+            appendLine("Ponovni pokušaj samo za bioskope bez današnjih podataka; ostali su već upisani ranije.")
+            appendLine()
+        }
         appendLine("| Bioskop | Ukupno | Repertoar | Uskoro | Termina | Status |")
         appendLine("|---|---|---|---|---|---|")
         poBioskopu.forEach { (ime, filmovi) ->

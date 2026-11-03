@@ -16,6 +16,9 @@ import java.time.LocalTime
 
 private val logger = LoggerFactory.getLogger("TuckwoodCineplexScraper")
 
+/** Pause before each attempt: the first goes right away, the next after 15 s and 45 s. */
+private val RETRY_PAUSES_MS = listOf(0L, 15_000L, 45_000L)
+
 /** "Marilyn Monroe 18:00" -> the time at the end. */
 private val TIME_AT_END = Regex("""(\d{1,2}):(\d{2})\s*$""")
 
@@ -82,23 +85,23 @@ class TuckwoodCineplexScraper : CinemaScraper {
     }
 
     /**
-     * Jsoup GET with one retry: a single "Read timed out" on this slower server should not leave
-     * the cinema without data for the whole day. Returns null only if both attempts fail; the
-     * caller then skips that section instead of throwing.
+     * Jsoup GET with retries and growing pauses. This server sometimes does not accept connections
+     * at all ("Connect timed out") from the machine running the job, for a minute or two - two
+     * attempts right after each other were not enough (seen in the daily reports). Returns null
+     * only if every attempt fails; the caller then skips that section instead of throwing.
      */
     private fun fetchWithRetry(url: String, section: String): Document? {
-        val maxAttempts = 2
-
-        repeat(maxAttempts) { index ->
+        RETRY_PAUSES_MS.forEachIndexed { index, pauseMs ->
             val attempt = index + 1
+            if (pauseMs > 0) Thread.sleep(pauseMs)
             try {
                 return Jsoup.connect(url)
                     .userAgent(USER_AGENT)
                     .timeout(timeoutMs)
                     .get()
             } catch (e: IOException) {
-                val suffix = if (attempt < maxAttempts) " - retrying" else ""
-                logger.warn("[$cinemaName] [$section] Request failed (attempt $attempt/$maxAttempts, timeout ${timeoutMs}ms): ${e.message}$suffix")
+                val suffix = if (attempt < RETRY_PAUSES_MS.size) " - retrying in ${RETRY_PAUSES_MS[attempt] / 1000}s" else ""
+                logger.warn("[$cinemaName] [$section] Request failed (attempt $attempt/${RETRY_PAUSES_MS.size}, timeout ${timeoutMs}ms): ${e.message}$suffix")
             }
         }
 
